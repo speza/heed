@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">Observatory</title>
+  <desc id="description">An aperture crossed by a survey datum with an observed signal</desc>
+  <style>
+    .aperture,
+    .datum {
+      fill: none;
+      stroke: #303735;
+      stroke-width: 4;
+    }
+    .signal {
+      fill: #e14b2d;
+    }
+    @media (prefers-color-scheme: dark) {
+      .aperture,
+      .datum {
+        stroke: #e0e2dc;
+      }
+      .signal {
+        fill: #ff7049;
+      }
+    }
+  </style>
+  <circle class="aperture" cx="64" cy="64" r="56" />
+  <path class="datum" d="M2 97 126 31" />
+  <circle class="signal" cx="92" cy="40" r="14" />
+</svg>
