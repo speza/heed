@@ -12,7 +12,7 @@ stale-frame flicker that no JS-side ordering can fully hide.
 
 ## Decision
 
-- The window is a **fixed stage** (866×696 on the right spine). While any pane
+- The window is a **fixed stage** (1120×860 on the right spine). While any pane
   is open the window geometry never changes; panes compose right-anchored next
   to the spine, growing leftward into the stage.
 - The **web owns all pixels** except the two vibrancy surfaces (spine-shaped,
@@ -30,8 +30,9 @@ stale-frame flicker that no JS-side ordering can fully hide.
 ## Consequences
 
 - Pane switching is a pure web content swap plus one synchronous glass
-  reposition — no window resize during ⌘-cycling.
+  reposition—no window resize during keyboard navigation.
 - While a pane is open the stage is modal-ish: it may intercept clicks in its
-  bounds; Escape or Option+Space dismisses.
+  bounds. Escape, `Option+Space`, or a pane close control collapses the pane to
+  the spine; only the spine's close control dismisses Heed entirely.
 - WebKit resize repaint quirks and `backdrop-filter` compositing glitches are
   structurally excluded (the window never resizes; no backdrop-filter).

@@ -1,10 +1,14 @@
 import { AnimatePresence, motion } from "motion/react";
-import { FormEvent, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { initialAgents } from "./fixtures";
 import { DiffDrawer } from "./DiffDrawer";
+import { TerminalOutput } from "./TerminalOutput";
+import { fetchAgentChanges, fetchRuntime } from "./runtime/client";
+import { runtimeAgent } from "./runtime/map";
+import type { RuntimeConnection } from "./runtime/types";
 import type { Agent, AgentStatus, ChatMessage } from "./types";
 
-type Drawer = "focus" | "fleet" | "diff";
+type Drawer = "focus" | "fleet" | "diff" | "help";
 type FleetFilter = AgentStatus | "attention" | "all";
 type Evidence = "result";
 type FocusMode = "map" | "list";
@@ -28,25 +32,17 @@ interface OrbitNode {
 }
 
 /** Panel geometry the native shell mirrors; width is constant so only height animates. */
-const hudWidth = 720;
-
 function panelSize(drawer: Drawer | null, edge: Edge, _mode: FocusMode) {
   // One stage size for every open drawer: ⌘-cycling swaps panes inside a
   // constant window, so switching can never flicker the native geometry.
   if (drawer !== null) {
-    return edge === "right" ? { width: 866, height: 696 } : { width: 836, height: 686 };
+    return edge === "right" ? { width: 1120, height: 860 } : { width: 1040, height: 840 };
   }
-  return edge === "right" ? { width: 76, height: 232 } : { width: 776, height: 76 };
+  return edge === "right" ? { width: 76, height: 260 } : { width: 776, height: 76 };
 }
 
-function drawerSize(drawer: Drawer | null, edge: Edge, mode: FocusMode) {
-  if (drawer === "diff") return { width: 780, height: 600 };
-  if (drawer !== "focus") {
-    if (edge === "right") return drawer === "fleet" ? { width: 460, height: 640 } : null;
-    return drawer === "fleet" ? { width: hudWidth, height: 574 } : null;
-  }
-  if (mode === "map") return { width: 780, height: 600 };
-  return edge === "right" ? { width: 420, height: 400 } : { width: hudWidth, height: 376 };
+function drawerSize(drawer: Drawer | null, _edge: Edge, _mode: FocusMode) {
+  return drawer === null ? null : { width: 1000, height: 760 };
 }
 
 const statusLabels: Record<AgentStatus, string> = {
@@ -55,6 +51,7 @@ const statusLabels: Record<AgentStatus, string> = {
   "needs-you": "Needs you",
   done: "Done",
   failed: "Failed",
+  unknown: "Unknown",
 };
 
 // One motion language: quick, crisp, no overshoot. The native window frame
@@ -70,6 +67,7 @@ const attentionPriority: Record<AgentStatus, number> = {
   working: 2,
   waiting: 3,
   done: 4,
+  unknown: 5,
 };
 
 function needsAttention(agent: Agent) {
@@ -106,9 +104,9 @@ function StatusMark({ status }: { readonly status: AgentStatus }) {
   return <span className={`status-mark status-${status}`} aria-label={statusLabels[status]} />;
 }
 
-function ApertureMark({ status }: { readonly status: AgentStatus }) {
+function ApertureMark({ connection }: { readonly connection: RuntimeConnection }) {
   return (
-    <svg className={`aperture-mark status-${status}`} viewBox="0 0 128 128" aria-hidden="true">
+    <svg className={`aperture-mark aperture-runtime-${connection}`} viewBox="0 0 128 128" aria-hidden="true">
       <circle className="aperture-ring" cx="64" cy="64" r="50" />
       <circle className="aperture-signal" cx="64" cy="38" r="16" />
     </svg>
@@ -296,12 +294,26 @@ function FocusList({
     <section className="focus-list" aria-label="Focused agent relationships">
       <FocusListHead agent={selected} />
       <div className="focus-list-rows">
-        {parent ? <FocusRow agent={parent} tag="Parent" onSelect={() => onSelect(parent.id)} /> : null}
-        <div className="focus-list-caption">delegated · {children.length}</div>
-        {children.map((agent) => (
-          <FocusRow key={agent.id} agent={agent} onSelect={() => onSelect(agent.id)} />
-        ))}
-        {children.length === 0 ? <div className="focus-list-empty">No delegated children yet.</div> : null}
+        {selected.runtime ? (
+          <div className="runtime-location">
+            <span>Herdr location</span>
+            <dl>
+              <div><dt>Workspace</dt><dd>{selected.workspace ?? selected.runtime.workspaceId}</dd></div>
+              <div><dt>Tab</dt><dd>{selected.runtime.tabId}</dd></div>
+              <div><dt>Pane</dt><dd>{selected.runtime.paneId}</dd></div>
+              {selected.runtime.cwd ? <div><dt>Directory</dt><dd>{selected.runtime.cwd}</dd></div> : null}
+            </dl>
+          </div>
+        ) : (
+          <>
+            {parent ? <FocusRow agent={parent} tag="Parent" onSelect={() => onSelect(parent.id)} /> : null}
+            <div className="focus-list-caption">delegated · {children.length}</div>
+            {children.map((agent) => (
+              <FocusRow key={agent.id} agent={agent} onSelect={() => onSelect(agent.id)} />
+            ))}
+            {children.length === 0 ? <div className="focus-list-empty">No delegated children yet.</div> : null}
+          </>
+        )}
       </div>
     </section>
   );
@@ -330,38 +342,17 @@ function EvidencePanel({ agent, evidence }: { readonly agent: Agent; readonly ev
   );
 }
 
-function ReplyCard({
+function TerminalCard({
   agent,
   messages,
-  draft,
-  onDraft,
-  onSend,
   onClose,
+  actionError,
 }: {
   readonly agent: Agent;
   readonly messages: readonly ChatMessage[];
-  readonly draft: string;
-  readonly onDraft: (draft: string) => void;
-  readonly onSend: (body: string) => void;
   readonly onClose: () => void;
+  readonly actionError?: string;
 }) {
-  const input = useRef<HTMLInputElement>(null);
-  const log = useRef<HTMLDivElement>(null);
-
-  useEffect(() => input.current?.focus(), []);
-
-  useEffect(() => {
-    const node = log.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [messages.length]);
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const body = draft.trim();
-    if (!body) return;
-    onSend(body);
-  }
-
   return (
     <motion.section
       className="reply-card"
@@ -369,15 +360,17 @@ function ReplyCard({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 12, scale: 0.98 }}
       transition={enterTransition}
-      aria-label={`Reply to ${agent.name}`}
+      aria-label={`Terminal for ${agent.name}`}
     >
       <header className="reply-head">
         <StatusMark status={agent.status} />
         <strong>{agent.name}</strong>
-        <button className="icon-button" onClick={onClose} aria-label="Close reply" type="button"><Glyph name="close" /></button>
+        <span className="terminal-back-hint">Back to agents <kbd>⌘W</kbd></span>
+        <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to agents (Command-W)" type="button"><Glyph name="close" /></button>
       </header>
-      <div className="reply-log" ref={log}>
-        {messages.length === 0 ? <EmptyState>Nothing yet. Say what you need.</EmptyState> : null}
+      <div className="reply-log">
+        {messages.length === 0 && !agent.runtime ? <EmptyState>Nothing yet. Say what you need.</EmptyState> : null}
+        {actionError ? <p className="runtime-error">{actionError}</p> : null}
         {messages.map((message) => (
           <div className={`message message-${message.role}`} key={message.id}>
             <span>{message.role === "human" ? "You" : "Agent"}</span>
@@ -385,22 +378,18 @@ function ReplyCard({
             <time>{message.time}</time>
           </div>
         ))}
+        {agent.runtime ? (
+          <section className="runtime-output">
+            <header><span>Connected terminal</span><small>Wheel or PageUp/PageDown to scroll</small></header>
+            <TerminalOutput agentId={agent.id} />
+          </section>
+        ) : null}
       </div>
-      <form className="composer" onSubmit={submit}>
-        <input
-          ref={input}
-          value={draft}
-          onChange={(event) => onDraft(event.target.value)}
-          placeholder="Respond…"
-          aria-label="Message"
-        />
-        <button type="submit" aria-label="Send message">↗</button>
-      </form>
     </motion.section>
   );
 }
 
-const fleetOrder: readonly AgentStatus[] = ["needs-you", "working", "waiting", "failed", "done"];
+const fleetOrder: readonly AgentStatus[] = ["needs-you", "working", "waiting", "failed", "done", "unknown"];
 
 function FleetView({
   agents,
@@ -408,16 +397,25 @@ function FleetView({
   filter,
   onFilter,
   onClose,
-  onSelect,
+  onTerminal,
+  onChanges,
+  keyboardActive,
+  focusRequest,
 }: {
   readonly agents: readonly Agent[];
   readonly selectedId: string;
   readonly filter: FleetFilter;
   readonly onFilter: (filter: FleetFilter) => void;
   readonly onClose: () => void;
-  readonly onSelect: (id: string) => void;
+  readonly onTerminal: (id: string) => void;
+  readonly onChanges: (id: string) => void;
+  readonly keyboardActive: boolean;
+  readonly focusRequest: number;
 }) {
   const [query, setQuery] = useState("");
+  const [activeId, setActiveId] = useState(selectedId);
+  const root = useRef<HTMLElement>(null);
+  const search = useRef<HTMLInputElement>(null);
   const normalized = query.trim().toLowerCase();
   const matchesFilter = (agent: Agent) =>
     filter === "all" || (filter === "attention" ? needsAttention(agent) : agent.status === filter);
@@ -429,7 +427,39 @@ function FleetView({
   const grouped = fleetOrder
     .map((status) => ({ status, agents: visible.filter((agent) => agent.status === status) }))
     .filter((group) => group.agents.length > 0);
-  const workspaces = new Set(agents.map((agent) => agent.workspace).filter(Boolean)).size;
+  const ordered = grouped.flatMap((group) => group.agents);
+  const workspaces = new Set(visible.map((agent) => agent.workspace).filter(Boolean)).size;
+  const attentionSummary = visible.length === 0
+    ? "No agents need attention"
+    : `${visible.length} ${visible.length === 1 ? "agent needs" : "agents need"} attention`;
+  const fleetSummary = filter === "attention"
+    ? `${attentionSummary} · ${workspaces} ${workspaces === 1 ? "workspace" : "workspaces"}`
+    : `${visible.length} ${visible.length === 1 ? "session" : "sessions"} across ${workspaces} ${workspaces === 1 ? "workspace" : "workspaces"}`;
+
+  useEffect(() => {
+    if (!ordered.some((agent) => agent.id === activeId)) setActiveId(ordered[0]?.id ?? "");
+  }, [activeId, ordered]);
+
+  useEffect(() => {
+    if (keyboardActive) root.current?.focus();
+  }, [keyboardActive, focusRequest]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    [...(root.current?.querySelectorAll<HTMLElement>("[data-agent-id]") ?? [])]
+      .find((element) => element.dataset.agentId === activeId)
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [activeId]);
+
+  function move(step: number) {
+    if (ordered.length === 0) return;
+    const index = ordered.findIndex((agent) => agent.id === activeId);
+    setActiveId(ordered[(Math.max(0, index) + step + ordered.length) % ordered.length]!.id);
+  }
+
+  function activeAgent() {
+    return ordered.find((agent) => agent.id === activeId) ?? ordered[0];
+  }
 
   const summaryEntries: readonly (FleetFilter | null)[] = ["all", "attention", "working", "waiting", "failed", "done"];
   const summaryCount = (candidate: FleetFilter) =>
@@ -441,7 +471,32 @@ function FleetView({
 
   return (
     <motion.section
+      ref={root}
       className="fleet-drawer"
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        if (!keyboardActive) return;
+        const editing = event.target === search.current;
+        if (editing) {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            setQuery("");
+            root.current?.focus();
+          }
+          return;
+        }
+        const key = event.key.toLowerCase();
+        if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); event.stopPropagation(); move(1); }
+        else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); event.stopPropagation(); move(-1); }
+        else if (event.key === "Home") { event.preventDefault(); event.stopPropagation(); setActiveId(ordered[0]?.id ?? ""); }
+        else if (event.key === "End") { event.preventDefault(); event.stopPropagation(); setActiveId(ordered.at(-1)?.id ?? ""); }
+        else if (event.key === "/") { event.preventDefault(); event.stopPropagation(); search.current?.focus(); }
+        else if (key === "a") { event.preventDefault(); event.stopPropagation(); onFilter(filter === "attention" ? "all" : "attention"); }
+        else if (event.key === "Enter" || key === "t") { const agent = activeAgent(); if (agent) { event.preventDefault(); event.stopPropagation(); onTerminal(agent.id); } }
+        else if (key === "d") { const agent = activeAgent(); if (agent) { event.preventDefault(); event.stopPropagation(); onChanges(agent.id); } }
+        else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
+      }}
       initial={{ opacity: 0, y: 16, scale: 0.99 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 10, scale: 0.99 }}
@@ -449,13 +504,13 @@ function FleetView({
     >
       <header className="fleet-header">
         <div>
-          <span className="eyebrow">OBSERVATORY · LIVE FLEET</span>
+          <span className="eyebrow">HEED · LIVE AGENTS</span>
           <h2>{filter === "attention" ? "Needs you" : "All agents"}</h2>
-          <p>{agents.length} sessions across {workspaces} workspaces</p>
+          <p>{fleetSummary}</p>
         </div>
         <label className="fleet-search">
           <span>⌕</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find session, task or workspace…" autoFocus />
+          <input ref={search} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find session, task or workspace…" />
         </label>
         <button className="icon-button" onClick={onClose} aria-label="Close fleet" type="button"><Glyph name="close" /></button>
       </header>
@@ -479,12 +534,21 @@ function FleetView({
           <div className="fleet-note"><Glyph name="branch" /><p>Herdr remains the runtime. This layer only indexes, focuses and sends commands.</p></div>
         </aside>
         <div className="fleet-list">
+          <div className="fleet-scroll">
           {grouped.map((group) => (
             <section className={`fleet-group status-surface-${group.status}`} key={group.status}>
               <header><StatusMark status={group.status} /><strong>{statusLabels[group.status]}</strong><span>{group.agents.length}</span></header>
               <div className="fleet-rows">
                 {group.agents.map((agent) => (
-                  <button className={agent.id === selectedId ? "is-selected" : ""} onClick={() => onSelect(agent.id)} type="button" key={agent.id}>
+                  <button
+                    className={agent.id === activeId ? "is-selected" : ""}
+                    onFocus={() => setActiveId(agent.id)}
+                    onMouseEnter={() => setActiveId(agent.id)}
+                    onClick={() => onTerminal(agent.id)}
+                    type="button"
+                    data-agent-id={agent.id}
+                    key={agent.id}
+                  >
                     <span className="fleet-agent-copy"><strong>{agent.name}</strong><small>{agent.task}</small></span>
                     <span className="fleet-agent-meta"><b>{agent.workspace ?? "minimal-ade"}</b><small>{agent.provider} · {agent.model}</small></span>
                     <span className="fleet-elapsed">{agent.elapsed}</span>
@@ -494,7 +558,11 @@ function FleetView({
               </div>
             </section>
           ))}
-          {grouped.length === 0 ? <EmptyState>No matching Agent sessions.</EmptyState> : null}
+          {grouped.length === 0 ? (
+            <EmptyState>{query ? "No matching Agent sessions." : filter === "attention" ? "All clear. Press A to browse all Agents." : "No Agent sessions."}</EmptyState>
+          ) : null}
+          </div>
+          <div className="fleet-keyboard-help"><span>↑↓ / J K</span> navigate <span>↵</span> terminal <span>D</span> changes <span>/</span> search <span>A</span> attention/all</div>
         </div>
       </div>
     </motion.section>
@@ -508,6 +576,7 @@ function CommandPalette({
   onFleet,
   onSpawn,
   onChanges,
+  live,
 }: {
   readonly agents: readonly Agent[];
   readonly onClose: () => void;
@@ -515,6 +584,7 @@ function CommandPalette({
   readonly onFleet: (filter: FleetFilter) => void;
   readonly onSpawn: () => void;
   readonly onChanges: () => void;
+  readonly live: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -525,10 +595,10 @@ function CommandPalette({
       { id: "cmd-all", label: "All agents", hint: "fleet", run: () => onFleet("all") },
       { id: "cmd-working", label: "Show working now", hint: "fleet", run: () => onFleet("working") },
       { id: "cmd-attention", label: "Needs you", hint: "triage", run: () => onFleet("attention") },
-      { id: "cmd-spawn", label: "Spawn child", hint: "mock", run: onSpawn },
-      { id: "cmd-changes", label: "Show changes", hint: "⌘D", run: onChanges },
+      ...(live ? [] : [{ id: "cmd-spawn", label: "Spawn child", hint: "demo", run: onSpawn }]),
+      { id: "cmd-changes", label: live ? "Workspace changes" : "Show changes", hint: "D", run: onChanges },
     ],
-    [onFleet, onSpawn, onChanges],
+    [onFleet, onSpawn, onChanges, live],
   );
 
   const normalized = query.trim().toLowerCase();
@@ -587,77 +657,157 @@ function CommandPalette({
             );
           })}
         </div>
-        <footer><span>↑↓ navigate</span><span>⏵ run</span><span>⌘1 list · ⌘2 map · ⌘3 fleet</span><span>esc close</span></footer>
+        <footer><span>↑↓ navigate</span><span>↵ run</span><span>⌥Space attention</span><span>esc close</span></footer>
       </motion.div>
     </motion.div>
   );
 }
 
+function KeyboardHelp({ onClose }: { readonly onClose: () => void }) {
+  const groups = [
+    { title: "Global", shortcuts: [["⌥Space", "Open / collapse main pane"], ["?", "Keyboard shortcuts"], ["⌘K", "Command palette"], ["Sidebar ×", "Hide Heed"]] },
+    { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Navigate"], ["↵ / T", "Open terminal"], ["D", "Workspace changes"], ["/", "Search"], ["A", "Attention / all"], ["Esc", "Collapse to sidebar"]] },
+    { title: "Terminal", shortcuts: [["⌘W", "Back to agents"], ["Esc", "Terminal input"], ["Wheel / PgUp PgDn", "Scroll"]] },
+  ] as const;
+
+  return (
+    <motion.section
+      className="keyboard-help"
+      initial={{ opacity: 0, y: 16, scale: 0.99 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 10, scale: 0.99 }}
+      transition={enterTransition}
+      aria-labelledby="keyboard-help-title"
+    >
+      <header>
+        <div><span className="eyebrow">HEED · REFERENCE</span><h2 id="keyboard-help-title">Keyboard shortcuts</h2></div>
+        <button className="icon-button" onClick={onClose} aria-label="Close keyboard shortcuts" type="button"><Glyph name="close" /></button>
+      </header>
+      <div className="keyboard-help-groups">
+        {groups.map((group) => (
+          <section key={group.title}>
+            <h3>{group.title}</h3>
+            <dl>{group.shortcuts.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl>
+          </section>
+        ))}
+      </div>
+      <footer><span>Press</span><kbd>?</kbd><span>again to return</span></footer>
+    </motion.section>
+  );
+}
+
 function HudBar({
-  agent,
   attentionCount,
   onFocusToggle,
   onTriage,
   onFleet,
-  onCommand,
+  onHelp,
+  connection,
 }: {
-  readonly agent: Agent;
   readonly attentionCount: number;
   readonly onFocusToggle: () => void;
   readonly onTriage: () => void;
   readonly onFleet: () => void;
-  readonly onCommand: () => void;
+  readonly onHelp: () => void;
+  readonly connection: RuntimeConnection;
 }) {
   return (
     <footer className="hud-bar" data-native-drag>
-      <button className="bar-agent" onClick={onFocusToggle} type="button" aria-label="Toggle focus drawer">
-        <ApertureMark status={agent.status} />
+      <button className="bar-agent" onClick={onFocusToggle} type="button" aria-label={`Runtime ${connection}; toggle focus drawer`}>
+        <ApertureMark connection={connection} />
       </button>
-      {attentionCount > 0 ? (
-        <button className="bar-attention" onClick={onTriage} type="button">
-          <span className="status-mark status-needs-you" aria-hidden="true" />
-          <b>{attentionCount}</b>
-          <span className="att-label">need you</span>
-        </button>
-      ) : (
-        <span className="bar-calm">All clear</span>
-      )}
+      <button
+        className={`bar-attention ${attentionCount === 0 ? "is-zero" : ""}`}
+        onClick={onTriage}
+        aria-label={attentionCount === 0 ? "0 need you · all clear" : `${attentionCount} need you`}
+        type="button"
+      >
+        <span className="status-mark status-needs-you" aria-hidden="true" />
+        <b>{attentionCount}</b>
+        <span className="att-label">{attentionCount === 0 ? "all clear" : "need you"}</span>
+      </button>
       <span className="bar-spacer" />
       <button className="icon-button" onClick={onFleet} aria-label="All agents" type="button"><Glyph name="fleet" /></button>
-      <button className="icon-button" onClick={onCommand} aria-label="Commands" type="button"><Glyph name="command" /></button>
+      <button className="icon-button help-button" onClick={onHelp} aria-label="Keyboard shortcuts" type="button">?</button>
       <button className="icon-button" onClick={() => shellMessage("hide")} aria-label="Hide panel" type="button"><Glyph name="close" /></button>
     </footer>
   );
 }
 
-export function App() {
-  const [agents, setAgents] = useState<readonly Agent[]>(initialAgents);
-  const [selectedId, setSelectedId] = useState("lead");
-  const [drawer, setDrawer] = useState<Drawer | null>("focus");
+const runtimePlaceholder: Agent = {
+  id: "runtime-placeholder",
+  name: "Connecting to Herdr",
+  role: "Runtime",
+  task: "Waiting for the local Herdr server",
+  status: "waiting",
+  provider: "Herdr",
+  model: "Local",
+  elapsed: "now",
+  messages: [],
+  changes: [],
+};
+
+export function App({ demo = import.meta.env.MODE === "test" || new URLSearchParams(window.location.search).has("demo") }: { readonly demo?: boolean }) {
+  const [agents, setAgents] = useState<readonly Agent[]>(demo ? initialAgents : []);
+  const [selectedId, setSelectedId] = useState(demo ? "lead" : "");
+  const [drawer, setDrawer] = useState<Drawer | null>(demo ? "focus" : "fleet");
   const [focusMode, setFocusMode] = useState<FocusMode>("list");
   // The right spine won the anchor trial (ADR-0006); bottom is retired.
   const edge: Edge = "right";
   const [replyOpen, setReplyOpen] = useState(false);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
-  const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
+  const [fleetFilter, setFleetFilter] = useState<FleetFilter>(demo ? "all" : "attention");
+  const [returnDrawer, setReturnDrawer] = useState<Drawer>(demo ? "focus" : "fleet");
+  const [helpReturnDrawer, setHelpReturnDrawer] = useState<Drawer | null>(demo ? "focus" : "fleet");
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [extraMessages, setExtraMessages] = useState<Record<string, readonly ChatMessage[]>>({});
+  const [attentionFocusRequest, setAttentionFocusRequest] = useState(0);
+  const [connection, setConnection] = useState<RuntimeConnection>(demo ? "demo" : "connecting");
+  const [actionError, setActionError] = useState<string>();
 
-  const selected = agents.find((agent) => agent.id === selectedId) ?? agents[0]!;
+  const selected = agents.find((agent) => agent.id === selectedId) ?? agents[0] ?? runtimePlaceholder;
   const selectedParent = useMemo(
     () => (selected.parentId ? agents.find((agent) => agent.id === selected.parentId) : undefined),
     [agents, selected],
   );
   const selectedChildren = useMemo(() => agents.filter((agent) => agent.parentId === selected.id), [agents, selected]);
-  const visibleMessages = useMemo(
-    () => [...selected.messages, ...(extraMessages[selected.id] ?? [])],
-    [selected, extraMessages],
-  );
-  const attentionAgents = useMemo(
-    () => agents.filter(needsAttention).sort((a, b) => attentionPriority[a.status] - attentionPriority[b.status] || a.name.localeCompare(b.name)),
-    [agents],
-  );
+  const attentionAgents = useMemo(() => {
+    const attention = agents.filter(needsAttention);
+    return demo
+      ? attention.sort((a, b) => attentionPriority[a.status] - attentionPriority[b.status] || a.name.localeCompare(b.name))
+      : attention;
+  }, [agents, demo]);
+
+  useEffect(() => {
+    if (demo) return;
+    let active = true;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const snapshot = await fetchRuntime();
+        if (!active) return;
+        if (!snapshot.available) {
+          setConnection((current) => current === "live" || current === "stale" ? "stale" : "offline");
+        } else {
+          const next = snapshot.agents.map(runtimeAgent);
+          setAgents((current) => next.map((agent) => {
+            const existing = current.find((candidate) => candidate.id === agent.id);
+            return existing?.changes.length ? { ...agent, workspace: existing.workspace, changes: existing.changes } : agent;
+          }));
+          setSelectedId((current) => next.some((agent) => agent.id === current) ? current : (next[0]?.id ?? ""));
+          setConnection("live");
+        }
+      } catch {
+        if (active) setConnection((current) => current === "live" || current === "stale" ? "stale" : "offline");
+      } finally {
+        if (active) timer = window.setTimeout(refresh, 2_000);
+      }
+    };
+    void refresh();
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [demo]);
 
   const nodes = useMemo<readonly OrbitNode[]>(() => {
     const slots = selectedParent ? mapLayout.withParent : mapLayout.alone;
@@ -679,7 +829,7 @@ export function App() {
   // The native window is the source of truth for when a geometry change has
   // actually landed: the web renders the committed geometry so it never
   // paints a layout the window cannot show yet (the switch/close flicker).
-  const [rendered, setRendered] = useState<HudGeometry>({ drawer: "focus", edge: "right", mode: "list" });
+  const [rendered, setRendered] = useState<HudGeometry>({ drawer: demo ? "focus" : "fleet", edge: "right", mode: "list" });
   const geometryTarget = { drawer, edge, mode: focusMode };
   const geometryTargetRef = useRef(geometryTarget);
   geometryTargetRef.current = geometryTarget;
@@ -710,84 +860,109 @@ export function App() {
     return () => window.removeEventListener("heed:resized", commit);
   }, []);
   useEffect(() => {
-    const sync = () => shellMessage("resize", { ...panelSize(drawerRef.current, edgeRef.current, focusModeRef.current), edge: edgeRef.current, drawer: drawerSize(drawerRef.current, edgeRef.current, focusModeRef.current) });
-    window.addEventListener("heed:shown", sync);
-    return () => window.removeEventListener("heed:shown", sync);
+    const showAttention = () => {
+      setPaletteOpen(false);
+      setReplyOpen(false);
+      setEvidence(null);
+      setFleetFilter("attention");
+      setDrawer("fleet");
+      setAttentionFocusRequest((request) => request + 1);
+    };
+    const prepareHidden = () => {
+      setPaletteOpen(false);
+      setReplyOpen(false);
+      setFleetFilter("attention");
+      setDrawer("fleet");
+    };
+    window.addEventListener("heed:shown", showAttention);
+    window.addEventListener("heed:hidden", prepareHidden);
+    return () => {
+      window.removeEventListener("heed:shown", showAttention);
+      window.removeEventListener("heed:hidden", prepareHidden);
+    };
   }, []);
 
-  function peelEscape() {
+  useEffect(() => {
+    const toggleMainSurface = () => {
+      if (drawer !== null || paletteOpen || replyOpen) {
+        setPaletteOpen(false);
+        setReplyOpen(false);
+        setEvidence(null);
+        setDrawer(null);
+        return;
+      }
+      setFleetFilter("attention");
+      setDrawer("fleet");
+      setAttentionFocusRequest((request) => request + 1);
+    };
+    window.addEventListener("heed:toggle-main", toggleMainSurface);
+    return () => window.removeEventListener("heed:toggle-main", toggleMainSurface);
+  }, [drawer, paletteOpen, replyOpen]);
+
+  function closeCurrentSurface() {
     if (paletteOpen) setPaletteOpen(false);
     else if (replyOpen) setReplyOpen(false);
-    else if (drawer) setDrawer(null);
-    else shellMessage("hide");
+    else if (drawer === "help") setDrawer(helpReturnDrawer);
+    else if (drawer === "diff") setDrawer(returnDrawer);
+    else if (drawer === "focus") openFleet("attention");
+    else if (drawer === "fleet") setDrawer(null);
   }
-
-  const peelRef = useRef(peelEscape);
-  peelRef.current = peelEscape;
-
-  // The native shell forwards Escape here so drawers peel before the panel hides.
-  useEffect(() => {
-    const onEscape = () => peelRef.current();
-    window.addEventListener("minimal-ade:escape", onEscape);
-    return () => window.removeEventListener("minimal-ade:escape", onEscape);
-  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const meta = event.metaKey || event.ctrlKey;
-      if (meta && event.key.toLowerCase() === "k") {
+      const target = event.target as HTMLElement | null;
+      const key = event.key.toLowerCase();
+      const command = event.metaKey;
+
+      // Capture the two application commands before xterm can forward them.
+      if (command && key === "w") {
         event.preventDefault();
+        event.stopPropagation();
+        closeCurrentSurface();
+        return;
+      }
+      if (command && key === "k") {
+        event.preventDefault();
+        event.stopPropagation();
         setPaletteOpen((open) => !open);
         return;
       }
-      if (meta && ["1", "2", "3", "d"].includes(event.key)) {
-        // Always-defined pane binds: jump back to any pane from anywhere.
+
+      // Everything else belongs to xterm while the terminal has focus.
+      if (target?.closest?.(".terminal-frame")) return;
+      const editable = target?.closest?.("input, textarea, select, [contenteditable]");
+      if (!command && !event.altKey && key === "?" && !editable) {
         event.preventDefault();
-        setPaletteOpen(false);
-        setEvidence(null);
-        setReplyOpen(false);
-        if (event.key === "1") {
-          setDrawer("focus");
-          setFocusMode("list");
-        } else if (event.key === "2") {
-          setDrawer("focus");
-          setFocusMode("map");
-        } else if (event.key === "d") {
-          setDrawer((current) => (current === "diff" ? "focus" : "diff"));
-        } else {
-          openFleet("all");
-        }
+        event.stopPropagation();
+        toggleKeyboardHelp();
         return;
       }
+      // Fleet owns its complete keyboard model locally.
+      if (target?.closest?.(".fleet-drawer")) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        peelRef.current();
+        closeCurrentSurface();
         return;
       }
-      const target = event.target as HTMLElement | null;
-      if (meta || event.altKey || target?.closest?.("input, textarea, select, [contenteditable]")) return;
-      if (event.key === "r") {
-        if (drawer === "focus" && !replyOpen) {
-          event.preventDefault();
-          setEvidence(null);
-          setReplyOpen(true);
-        }
-        return;
-      }
-      if (event.key === "Tab" && drawer === "focus" && attentionAgents.length > 0) {
+      if (command || event.altKey || editable) return;
+
+      if (key === "t" && drawer === "focus" && !replyOpen && (demo || selected.runtime)) {
         event.preventDefault();
-        const ids = attentionAgents.map((agent) => agent.id);
-        const index = ids.indexOf(selectedId);
-        const next = event.shiftKey
-          ? ids[(index - 1 + ids.length) % ids.length]!
-          : ids[(index + 1) % ids.length]!;
-        setSelectedId(next);
         setEvidence(null);
+        setReplyOpen(true);
+      } else if (key === "d" && drawer === "focus" && !replyOpen) {
+        event.preventDefault();
+        void openChanges();
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [paletteOpen, replyOpen, drawer, selectedId, attentionAgents]);
+    const onNativeBack = () => closeCurrentSurface();
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("heed:back", onNativeBack);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("heed:back", onNativeBack);
+    };
+  }, [paletteOpen, replyOpen, drawer, returnDrawer, helpReturnDrawer, demo, selected.runtime]);
 
   function selectAgent(id: string) {
     setSelectedId(id);
@@ -808,16 +983,53 @@ export function App() {
     setDrawer((current) => (current === "focus" ? null : "focus"));
   }
 
-  function sendMessage(body: string) {
-    const now = new Date();
-    const message: ChatMessage = {
-      id: `local-${now.getTime()}`,
-      role: "human",
-      body,
-      time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    };
-    setExtraMessages((current) => ({ ...current, [selected.id]: [...(current[selected.id] ?? []), message] }));
-    setDrafts((current) => ({ ...current, [selected.id]: "" }));
+  function toggleKeyboardHelp() {
+    if (drawer === "help") {
+      setDrawer(helpReturnDrawer);
+      return;
+    }
+    setHelpReturnDrawer(drawer);
+    setPaletteOpen(false);
+    setReplyOpen(false);
+    setDrawer("help");
+  }
+
+  function openTerminal(id: string) {
+    const agent = agents.find((candidate) => candidate.id === id);
+    if (!agent || (!demo && !agent.runtime)) return;
+    setSelectedId(id);
+    setEvidence(null);
+    setReplyOpen(true);
+  }
+
+  async function openChangesFor(id: string) {
+    const agent = agents.find((candidate) => candidate.id === id);
+    if (!agent) return;
+    setActionError(undefined);
+    setSelectedId(id);
+    setReturnDrawer(drawer === "fleet" ? "fleet" : "focus");
+    if (!agent.runtime) {
+      if (!demo) {
+        setActionError("Herdr is unavailable.");
+        return;
+      }
+      setEvidence(null);
+      setDrawer("diff");
+      return;
+    }
+    try {
+      const result = await fetchAgentChanges(id);
+      setAgents((current) => current.map((candidate) => candidate.id === id ? { ...candidate, workspace: result.workspace, changes: result.files } : candidate));
+      if (result.message) setActionError(result.message);
+      setEvidence(null);
+      setDrawer("diff");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Workspace changes could not be read.");
+    }
+  }
+
+  async function openChanges() {
+    await openChangesFor(selected.id);
   }
 
   function spawnChild() {
@@ -877,19 +1089,21 @@ export function App() {
                 {evidence ? <EvidencePanel agent={selected} evidence={evidence} key={evidence} /> : null}
               </AnimatePresence>
               <div className="focus-actions">
-                <div className="mode-toggle" role="group" aria-label="Focus layout">
+                {demo ? <div className="mode-toggle" role="group" aria-label="Focus layout">
                   <button type="button" className={rendered.mode === "map" ? "is-active" : ""} onClick={() => setFocusMode("map")}>Map</button>
                   <button type="button" className={rendered.mode === "list" ? "is-active" : ""} onClick={() => setFocusMode("list")}>List</button>
-                </div>
-                <button className={`chip ${evidence === "result" ? "is-active" : ""}`} onClick={() => setEvidence((current) => (current === "result" ? null : "result"))} type="button">
-                  Result{selected.result ? <em aria-label="has result">✓</em> : null}
-                </button>
-                <button className="chip" onClick={() => { setEvidence(null); setDrawer("diff"); }} type="button">
-                  Changes{selected.changes.length > 0 ? <em>{selected.changes.length}</em> : null}
+                </div> : null}
+                {demo ? (
+                  <button className={`chip ${evidence === "result" ? "is-active" : ""}`} onClick={() => setEvidence((current) => (current === "result" ? null : "result"))} type="button">
+                    Result{selected.result ? <em aria-label="has result">✓</em> : null}
+                  </button>
+                ) : null}
+                <button className="chip" onClick={() => void openChanges()} type="button">
+                  {!demo ? "Workspace changes" : "Changes"}{selected.changes.length > 0 ? <em>{selected.changes.length}</em> : null}
                 </button>
                 <span className="bar-spacer" />
-                <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">Reply <kbd>R</kbd></button>
-                <button className="chip chip-spawn" onClick={spawnChild} type="button"><Glyph name="branch" /> Spawn child</button>
+                {(demo || selected.runtime) ? <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">Terminal <kbd>T</kbd></button> : null}
+                {demo ? <button className="chip chip-spawn" onClick={spawnChild} type="button"><Glyph name="branch" /> Spawn child</button> : null}
               </div>
             </motion.section>
           ) : null}
@@ -900,22 +1114,26 @@ export function App() {
               filter={fleetFilter}
               onFilter={setFleetFilter}
               onClose={() => setDrawer(null)}
-              onSelect={selectAgent}
+              onTerminal={openTerminal}
+              onChanges={(id) => void openChangesFor(id)}
+              keyboardActive={!replyOpen && !paletteOpen}
+              focusRequest={attentionFocusRequest}
             />
           ) : null}
           {rendered.drawer === "diff" ? (
-            <DiffDrawer agent={selected} onClose={() => setDrawer(null)} />
+            <DiffDrawer agent={selected} onClose={() => setDrawer(returnDrawer)} onTerminal={() => openTerminal(selected.id)} />
+          ) : null}
+          {rendered.drawer === "help" ? (
+            <KeyboardHelp onClose={() => setDrawer(helpReturnDrawer)} />
           ) : null}
         <AnimatePresence>
-          {rendered.drawer === "focus" && replyOpen ? (
-            <ReplyCard
+          {replyOpen ? (
+            <TerminalCard
               key="reply"
               agent={selected}
-              messages={visibleMessages}
-              draft={drafts[selected.id] ?? ""}
-              onDraft={(draft) => setDrafts((current) => ({ ...current, [selected.id]: draft }))}
-              onSend={sendMessage}
+              messages={selected.messages}
               onClose={() => setReplyOpen(false)}
+              actionError={actionError}
             />
           ) : null}
         </AnimatePresence>
@@ -927,17 +1145,19 @@ export function App() {
               onSelectAgent={selectAgent}
               onFleet={openFleet}
               onSpawn={spawnChild}
-              onChanges={() => { setEvidence(null); setDrawer("diff"); }}
+              onChanges={() => void openChanges()}
+              live={!demo}
             />
           ) : null}
         </AnimatePresence>
+        {actionError && !replyOpen ? <button className="runtime-toast" type="button" onClick={() => setActionError(undefined)}>{actionError}</button> : null}
         <HudBar
-          agent={selected}
           attentionCount={attentionAgents.length}
           onFocusToggle={toggleFocusDrawer}
           onTriage={() => openFleet("attention")}
           onFleet={() => openFleet("all")}
-          onCommand={() => setPaletteOpen(true)}
+          onHelp={toggleKeyboardHelp}
+          connection={connection}
         />
       </div>
     </main>

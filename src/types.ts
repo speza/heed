@@ -1,4 +1,4 @@
-export type AgentStatus = "working" | "waiting" | "needs-you" | "done" | "failed";
+export type AgentStatus = "working" | "waiting" | "needs-you" | "done" | "failed" | "unknown";
 
 export interface ChatMessage {
   readonly id: string;
@@ -18,6 +18,16 @@ export interface FileChange {
   readonly hunks: readonly string[];
 }
 
+export interface RuntimeAgentMetadata {
+  readonly paneId: string;
+  readonly workspaceId: string;
+  readonly tabId: string;
+  readonly cwd?: string;
+  readonly revision: number;
+  readonly interactiveReady: boolean;
+  readonly rawStatus: "working" | "idle" | "blocked" | "done" | "unknown";
+}
+
 export interface Agent {
   readonly id: string;
   readonly parentId?: string;
@@ -33,4 +43,5 @@ export interface Agent {
   readonly messages: readonly ChatMessage[];
   readonly result?: string;
   readonly changes: readonly FileChange[];
+  readonly runtime?: RuntimeAgentMetadata;
 }

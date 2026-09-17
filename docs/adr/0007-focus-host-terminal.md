@@ -1,35 +1,45 @@
-# ADR-0007: Focus-the-host-terminal (proposed)
+# ADR-0007: Focus the host terminal
 
-Status: proposed (not implemented)
+Status: proposed (deferred)
 
 ## Context
 
-The HUD is a control surface over Herdr, but Herdr lives inside a terminal
-(Ghostty, in the demo user's case) inside a tab. At some point the operator
-wants to jump back to the place Herdr is running: the app, the window, the tab,
-the pane.
+The HUD is a control surface over Herdr, but Herdr lives inside a terminal. At
+some point the operator may want to jump from a selected Agent in Heed to the
+same Agent in an already-open Herdr client.
 
-## Decision (proposed)
+The current Herdr CLI cannot complete that navigation. `herdr agent focus`
+changes server-side focus, while each attached TUI client retains its own
+visible selection. App activation only returns to whichever terminal tab was
+previously active.
 
-Add an "Open in Herdr" affordance on panes that focuses the host terminal, via
-a fidelity ladder:
+Experiments with opening another Herdr client reached the server-side focus but
+created unwanted windows. Driving the existing client through synthetic
+keyboard input required Accessibility permission, depended on local keybindings
+and priority ordering, and only addressed the first nine agents.
 
-1. **Activate the app** — `NSRunningApplication`/AppleScript `activate` on the
-   terminal bundle that hosts the session. Reliable, no permissions beyond
-   automation consent.
-2. **Pick the window** — System Events (AX) window enumeration matched by
-   title. Needs the Accessibility permission granted to this app.
-3. **Pick the tab** — walk the window's tab AX children and match the session's
-   tab title. Ghostty's AX support for tabs is the least reliable link; this
-   should be verified against real Ghostty builds and may need Ghostty-side
-   support (e.g. AppleScript dictionary or tab titles set to the session id).
-4. **Best long-term: Herdr co-designs it** — Herdr reports the session→host
-   mapping (bundle id, window/tab title, or a `focus` command in its CLI), and
-   the HUD simply invokes it. The runtime owns the truth; the HUD only asks.
+## Decision
+
+Do not ship **Open in Herdr** yet. Heed will not request Accessibility
+permission, synthesize terminal input, open another terminal window, or expose
+a server-side focus action that cannot fulfil the visible-navigation promise.
+
+Reconsider the feature when Herdr exposes a first-class operation such as:
+
+```text
+agent.reveal(target, client?)
+```
+
+Herdr should own choosing or activating the appropriate client and selecting
+the correct workspace, tab and pane. Heed should only request the reveal.
 
 ## Consequences
 
-- Until Herdr provides the mapping, tab-level targeting is best-effort and
-  permission-gated; app-level activation is the reliable floor.
-- This keeps the HUD inside its boundary: it asks the runtime (or the OS) to
-  focus; it never hosts or drives the terminal itself.
+- The first integration remains focused on Heed's core hypothesis: triage, an
+  interactive terminal surface and workspace evidence without opening Herdr.
+- The native bridge remains limited to Heed window and operating-system
+  behaviour.
+- Users navigate to Herdr themselves when the lightweight Heed surface is not
+  enough.
+- No terminal-specific bundle IDs, Accessibility permission or keybinding
+  assumptions become product requirements.

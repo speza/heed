@@ -1,14 +1,18 @@
-# Observatory — floating agent instrument
+# Heed — floating agent instrument
 
 A UI-first experiment for a beautiful, lightweight Agent control surface: a
 summoned floating spine with panes that slide out beside it. One selected
 Agent in the centre of the focus pane, its immediate relationships as a
 stacked list or constellation, a compact fleet index for triage, and stacked
-working-tree diffs as evidence. The data is entirely synthetic; there is no
-agent runtime or control plane yet.
+working-tree diffs as evidence. Live mode is a thin local control surface over
+Herdr: it discovers recognized agents, renders an interactive live terminal
+and shows workspace-level Git changes. An explicit fixture mode
+remains available for UI work.
 
-The UI wears the Observatory identity (aperture mark, paper-and-ink theme,
-signal accent). Architecture decisions live in `docs/adr/`; the long-term
+The UI wears the Heed identity with an aperture mark and a semantic
+Catppuccin Frappé theme. Palette mappings live in `src/themes.css`, allowing
+future themes without component rewrites (ADR-0009). Architecture decisions
+live in `docs/adr/`; the long-term
 identity question — whether this becomes a herdr(.dev) companion bar — is
 tracked in `docs/adr/0007-focus-host-terminal.md`.
 
@@ -19,7 +23,8 @@ bun install
 bun run dev
 ```
 
-Open the URL printed by Vite.
+Open the URL printed by Vite. Herdr must be running for live data. Add
+`?demo=1` to use the synthetic fixture fleet instead.
 
 ## Run as a macOS floating panel
 
@@ -28,23 +33,30 @@ bun install
 bun run shell
 ```
 
-The shell bundles the current web build in a fixed-stage AppKit `NSPanel`
-backed by `WKWebView`. The window never resizes while summoned; panes compose
-inside the stage (see `docs/adr/0003-fixed-stage-window.md`).
+The command builds the web experience, starts the loopback Herdr adapter and
+opens it in a fixed-stage AppKit `NSPanel` backed by `WKWebView`. The window
+never resizes while summoned; panes compose inside the stage (see
+`docs/adr/0003-fixed-stage-window.md`).
 
-- `Option+Space` summons and hides the instrument.
+- `Option+Space` globally opens or collapses the main attention pane while the
+  sidebar remains visible. If Heed was explicitly hidden, it reopens at the
+  attention list.
 - The **spine** floats 8px off the right edge of the screen: the aperture
-  mark (agent status as a signal colour), the `N need you` triage count, and
-  pane controls.
-- **Panes** slide out left of the spine, one at a time:
-  - focus — the local constellation or a stacked list (`⌘1` list, `⌘2` map)
-  - fleet — the compact triage index (`⌘3`)
-  - diff — stacked working-tree changes for the focused Agent (`⌘D`,
-    also the Changes chip)
-- `R` opens the reply card; `Tab`/`⇧Tab` cycle Agents needing attention.
-- `⌘K` opens the command palette (jump to agents, triage, changes, spawn).
-- `Escape` peels: reply first, then the pane, then the spine; one more hides
-  everything.
+  mark (runtime health as a signal colour), the `N need you` triage count, and
+  pane controls. Green is live, amber is connecting/stale, red is offline and
+  grey marks fixture mode.
+- In the attention list, `↑`/`↓` or `J`/`K` navigate, `Enter` or `T` opens the
+  selected Agent's terminal, `D` opens workspace changes, `/` focuses search,
+  and `A` toggles between attention and all Agents.
+- In workspace changes, `↑`/`↓` or `J`/`K` navigate files, `Enter`/`Space`
+  expands the active file, and `T` opens the terminal.
+- `⌘W` closes the terminal or changes surface and returns to the preserved
+  list. Bare `Escape` remains terminal input while xterm has focus.
+- `?` opens a compact keyboard reference and returns to the previous surface
+  when pressed again. `⌘K` opens the command palette.
+- Outside the terminal, `Escape` backs out to
+  the attention list, then collapses the main pane to the sidebar. Only the
+  sidebar's close control hides Heed entirely.
 
 ## Product hypothesis
 

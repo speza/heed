@@ -1,11 +1,13 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { herdrRuntimePlugin } from "./server/vite-plugin.ts";
 
 // The native shell loads dist/ over file://, where WKWebView refuses
 // ES-module scripts (opaque "null" origin, CORS). Emit a classic bundle
 // and rewrite the entry tag to a deferred classic script.
 const shellFileCompat: Plugin = {
   name: "shell-file-compat",
+  apply: "build",
   transformIndexHtml(html) {
     return html
       .replace(/<script([^>]*)>/g, (tag, attrs: string) =>
@@ -18,7 +20,7 @@ const shellFileCompat: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [react(), shellFileCompat],
+  plugins: [react(), herdrRuntimePlugin(), shellFileCompat],
   base: "./",
   build: {
     outDir: "dist",

@@ -8,11 +8,14 @@
     "build": "vite build",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "shell": "bun run build && swift run HeedShell"
+    "serve": "bun run server/index.ts",
+    "shell": "bun run build && bun run server/shell.ts"
   },
   "dependencies": {
     "@git-diff-view/react": "0.1.7",
     "@vitejs/plugin-react": "latest",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "motion": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -21,10 +24,13 @@
   "devDependencies": {
     "@testing-library/jest-dom": "latest",
     "@testing-library/react": "latest",
+    "@types/bun": "^1.4.2",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@types/ws": "^8.18.1",
     "jsdom": "latest",
     "typescript": "latest",
-    "vitest": "latest"
+    "vitest": "latest",
+    "ws": "^8.21.3"
   }
 }

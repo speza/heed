@@ -16,7 +16,7 @@ editing.
   directory, `+adds / −dels`, kind chip) with **lazy bodies** — the diff mounts
   only when a file is expanded, so nothing heavy renders up front.
 - Rendering uses **`@git-diff-view/react`** — the same library, version and
-  theming approach as Observatory (`DiffFile.createInstance` + `DiffView`,
+  theming approach as Heed (`DiffFile.createInstance` + `DiffView`,
   unified mode, dark theme via `--diff-*` variables, truncation guards for
   oversized diffs). Parity over novelty.
 - Patch data is **git-shaped unified diff text per file** (`--- /dev/null`,

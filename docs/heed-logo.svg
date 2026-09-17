@@ -1,23 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
-  <title id="title">Observatory</title>
+  <title id="title">Heed</title>
   <desc id="description">An aperture crossed by a survey datum with an observed signal</desc>
   <style>
     .aperture,
     .datum {
       fill: none;
-      stroke: #303735;
+      stroke: #414559;
       stroke-width: 4;
     }
     .signal {
-      fill: #e14b2d;
+      fill: #ca9ee6;
     }
     @media (prefers-color-scheme: dark) {
       .aperture,
       .datum {
-        stroke: #e0e2dc;
+        stroke: #c6d0f5;
       }
       .signal {
-        fill: #ff7049;
+        fill: #ca9ee6;
       }
     }
   </style>

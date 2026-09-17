@@ -18,6 +18,6 @@ grouped by attention state. Selecting a row re-centres the local constellation.
 ## Consequences
 
 - The list view is the default; the map is a deliberate, near-full-screen
-  special view opened from it (or ⌘2), not the durable mental model.
+  special view opened from it, not the durable mental model.
 - Deep lineage (grandchildren) is reachable by recentring, not by zooming.
 - Herdr's own UI remains the place for global portfolio views.

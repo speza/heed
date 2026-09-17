@@ -26,6 +26,10 @@ private func hotKeyEventHandler(
 final class FloatingPanel: NSPanel {
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
+
+  // NSPanel treats Escape as cancelOperation by default. The web terminal owns
+  // Escape, and Heed is dismissed explicitly with Option+Space or its close UI.
+  override func cancelOperation(_: Any?) {}
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler {
@@ -35,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   private var drawerEffect: NSVisualEffectView!
   private var hotKeyRef: EventHotKeyRef?
   private var hotKeyHandlerRef: EventHandlerRef?
-  private var localKeyMonitor: Any?
+  private var localCommandMonitor: Any?
   private var currentEdge = "right"
   private var drawerSize: CGSize?
 
@@ -43,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     NSApp.setActivationPolicy(.accessory)
     createPanel()
     registerGlobalShortcut()
-    registerLocalKeys()
+    registerLocalCommands()
     showPanel()
   }
 
@@ -54,8 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     if let hotKeyHandlerRef {
       RemoveEventHandler(hotKeyHandlerRef)
     }
-    if let localKeyMonitor {
-      NSEvent.removeMonitor(localKeyMonitor)
+    if let localCommandMonitor {
+      NSEvent.removeMonitor(localCommandMonitor)
     }
   }
 
@@ -64,7 +68,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   }
 
   func togglePanel() {
-    panel.isVisible ? hidePanel() : showPanel()
+    if panel.isVisible {
+      webView.evaluateJavaScript(
+        "window.dispatchEvent(new CustomEvent('heed:toggle-main'))",
+        completionHandler: nil
+      )
+    } else {
+      showPanel()
+    }
   }
 
   func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -90,6 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         drawerSize = CGSize(width: drawerWidth, height: drawerHeight)
       } else {
         drawerSize = nil
+        // Collapse immediately: an out-of-date effect frame can otherwise
+        // protrude beside the narrow sidebar until the web commit arrives.
+        drawerEffect.isHidden = true
       }
       resizePanel(width: width, height: height, edge: currentEdge)
       // Confirm so the web swaps its layout only once the window can show it.
@@ -97,6 +111,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         "window.dispatchEvent(new CustomEvent('heed:resized'))",
         completionHandler: nil
       )
+    case "commit":
+      // The web has swapped to the confirmed geometry. Move or hide the
+      // vibrancy surface only now so stale drawer glass cannot remain visible.
+      layoutBarSurface()
+      layoutDrawerSurface()
     default:
       break
     }
@@ -104,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
   private func createPanel() {
     panel = FloatingPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 68, height: 232),
+      contentRect: NSRect(x: 0, y: 0, width: 68, height: 260),
       styleMask: [.borderless, .fullSizeContentView],
       backing: .buffered,
       defer: false
@@ -211,13 +230,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     )
   }
 
-  // Escape peels the web drawer stack first; the web hides the panel itself
-  // once it is back at the bare bar.
-  private func registerLocalKeys() {
-    localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-      if event.keyCode == UInt16(kVK_Escape) {
+  // Keep the application-level back command reliable without intercepting
+  // Escape, control keys or any other input owned by the terminal.
+  private func registerLocalCommands() {
+    localCommandMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+      if event.keyCode == UInt16(kVK_ANSI_W), modifiers == .command {
         self?.webView?.evaluateJavaScript(
-          "window.dispatchEvent(new CustomEvent('minimal-ade:escape'))",
+          "window.dispatchEvent(new CustomEvent('heed:back'))",
           completionHandler: nil
         )
         return nil
@@ -242,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   }
 
   private func hidePanel() {
+    webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('heed:hidden'))")
     NSAnimationContext.runAnimationGroup(
       { context in
         context.duration = 0.12
@@ -288,11 +309,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     let clampedWidth: Double
     let clampedHeight: Double
     if edge == "right" {
-      clampedWidth = min(max(width, 40), 900)
-      clampedHeight = min(max(height, 170), min(760, maxVisibleHeight - 30))
+      clampedWidth = min(max(width, 40), 1200)
+      clampedHeight = min(max(height, 170), min(950, maxVisibleHeight - 30))
     } else {
-      clampedWidth = min(max(width, 400), 900)
-      clampedHeight = min(max(height, 40), min(760, maxVisibleHeight - 30))
+      clampedWidth = min(max(width, 400), 1200)
+      clampedHeight = min(max(height, 40), min(950, maxVisibleHeight - 30))
     }
     var frame = panel.frame
     let oldWidth = frame.width
@@ -318,9 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     if currentEdge == "right" {
       barEffect.frame = NSRect(
         x: bounds.width - 8 - 40,
-        y: (bounds.height - 176) / 2,
+        y: (bounds.height - 204) / 2,
         width: 40,
-        height: 176
+        height: 204
       )
     } else {
       barEffect.frame = NSRect(x: 28, y: 24, width: bounds.width - 56, height: 40)
