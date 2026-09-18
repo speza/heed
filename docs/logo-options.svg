@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 840" role="img" aria-labelledby="title description">
+  <title id="title">Heed logo explorations</title>
+  <desc id="description">Six simple geometric logo directions for Heed: aperture, orbit, beacon, focus, constellation and monogram.</desc>
+
+  <style>
+    .background { fill: #232634; }
+    .card { fill: #303446; stroke: #51576d; stroke-width: 1; }
+    .label {
+      fill: #c6d0f5;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: .02em;
+    }
+    .note {
+      fill: #a5adce;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    .title {
+      fill: #c6d0f5;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: .03em;
+    }
+    .subtitle {
+      fill: #a5adce;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+    }
+    .ink {
+      fill: none;
+      stroke: #c6d0f5;
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .fine-ink {
+      fill: none;
+      stroke: #8caaee;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .signal { fill: #ca9ee6; }
+    .signal-ring { fill: none; stroke: #ca9ee6; stroke-width: 4; }
+  </style>
+
+  <defs>
+    <symbol id="aperture" viewBox="0 0 128 128">
+      <circle class="ink" cx="64" cy="64" r="50" />
+      <path class="ink" d="M6 92 122 36" />
+      <circle class="signal" cx="88" cy="40" r="14" />
+    </symbol>
+
+    <symbol id="orbit" viewBox="0 0 128 128">
+      <path class="ink" d="M92 25a50 50 0 1 0 13 28" />
+      <circle class="signal" cx="91" cy="29" r="14" />
+      <path class="fine-ink" d="M48 82a25 25 0 0 0 31 4" />
+    </symbol>
+
+    <symbol id="beacon" viewBox="0 0 128 128">
+      <rect class="ink" x="39" y="10" width="50" height="108" rx="25" />
+      <circle class="signal" cx="64" cy="42" r="14" />
+      <path class="fine-ink" d="M24 72h15M89 72h15" />
+      <path class="fine-ink" d="M49 96h30" />
+    </symbol>
+
+    <symbol id="focus" viewBox="0 0 128 128">
+      <path class="ink" d="M42 20H20v22M86 20h22v22M20 86v22h22M108 86v22H86" />
+      <path class="fine-ink" d="M30 98 98 30" />
+      <circle class="signal" cx="72" cy="54" r="14" />
+    </symbol>
+
+    <symbol id="constellation" viewBox="0 0 128 128">
+      <path class="fine-ink" d="M64 64 28 29M64 64l36-35M64 64v42" />
+      <circle class="ink" cx="28" cy="29" r="10" />
+      <circle class="ink" cx="100" cy="29" r="10" />
+      <circle class="signal" cx="64" cy="64" r="17" />
+      <circle class="ink" cx="64" cy="106" r="10" />
+    </symbol>
+
+    <symbol id="monogram" viewBox="0 0 128 128">
+      <path class="ink" d="M27 17v94M101 17v94M27 64h74" />
+      <circle class="signal" cx="82" cy="64" r="14" />
+      <path class="fine-ink" d="M27 17h18M83 111h18" />
+    </symbol>
+  </defs>
+
+  <rect class="background" width="1180" height="840" rx="28" />
+  <text class="title" x="48" y="58">HEED / logo explorations</text>
+  <text class="subtitle" x="48" y="86">Simple geometric directions — all designed to survive favicon size and one-colour use.</text>
+
+  <g transform="translate(40 120)">
+    <rect class="card" width="340" height="300" rx="18" />
+    <text class="label" x="24" y="40">01 / APERTURE</text>
+    <text class="note" x="24" y="64">Current direction: focus + signal</text>
+    <use href="#aperture" x="106" y="92" width="128" height="128" />
+    <use href="#aperture" x="292" y="246" width="28" height="28" />
+  </g>
+
+  <g transform="translate(420 120)">
+    <rect class="card" width="340" height="300" rx="18" />
+    <text class="label" x="24" y="40">02 / ORBIT</text>
+    <text class="note" x="24" y="64">Open ring: attention in motion</text>
+    <use href="#orbit" x="106" y="92" width="128" height="128" />
+    <use href="#orbit" x="292" y="246" width="28" height="28" />
+  </g>
+
+  <g transform="translate(800 120)">
+    <rect class="card" width="340" height="300" rx="18" />
+    <text class="label" x="24" y="40">03 / BEACON</text>
+    <text class="note" x="24" y="64">Floating spine + runtime signal</text>
+    <use href="#beacon" x="106" y="92" width="128" height="128" />
+    <use href="#beacon" x="292" y="246" width="28" height="28" />
+  </g>
+
+  <g transform="translate(40 460)">
+    <rect class="card" width="340" height="300" rx="18" />
+    <text class="label" x="24" y="40">04 / FOCUS</text>
+    <text class="note" x="24" y="64">A selected Agent, clearly held</text>
+    <use href="#focus" x="106" y="92" width="128" height="128" />
+    <use href="#focus" x="292" y="246" width="28" height="28" />
+  </g>
+
+  <g transform="translate(420 460)">
+    <rect class="card" width="340" height="300" rx="18" />
+    <text class="label" x="24" y="40">05 / CONSTELLATION</text>
+    <text class="note" x="24" y="64">One Agent + immediate context</text>
+    <use href="#constellation" x="106" y="92" width="128" height="128" />
+    <use href="#constellation" x="292" y="246" width="28" height="28" />
+  </g>
+
+  <g transform="translate(800 460)">
+    <rect class="card" width="340" height="300" rx="18" />
+    <text class="label" x="24" y="40">06 / MONOGRAM</text>
+    <text class="note" x="24" y="64">An abstract H with a live signal</text>
+    <use href="#monogram" x="106" y="92" width="128" height="128" />
+    <use href="#monogram" x="292" y="246" width="28" height="28" />
+  </g>
+</svg>
