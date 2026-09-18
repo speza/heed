@@ -597,7 +597,16 @@ kbd {
 .aperture-mark .aperture-ring {
   fill: none;
   stroke: currentColor;
-  stroke-width: 7;
+  stroke-width: 5.5;
+}
+
+.aperture-mark .aperture-datum {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 5.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.78;
 }
 
 .aperture-mark .aperture-signal {

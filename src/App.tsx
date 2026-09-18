@@ -107,8 +107,9 @@ function StatusMark({ status }: { readonly status: AgentStatus }) {
 function ApertureMark({ connection }: { readonly connection: RuntimeConnection }) {
   return (
     <svg className={`aperture-mark aperture-runtime-${connection}`} viewBox="0 0 128 128" aria-hidden="true">
-      <circle className="aperture-ring" cx="64" cy="64" r="50" />
-      <circle className="aperture-signal" cx="64" cy="38" r="16" />
+      <circle className="aperture-ring" cx="64" cy="64" r="56" />
+      <path className="aperture-datum" d="M6 94 122 34" />
+      <circle className="aperture-signal" cx="91" cy="40" r="14" />
     </svg>
   );
 }

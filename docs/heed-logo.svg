@@ -1,13 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
   <title id="title">Heed</title>
-  <desc id="description">An aperture crossed by a survey datum with an observed signal</desc>
+  <desc id="description">A watchful aperture crossed by a datum with a live signal</desc>
   <style>
     .aperture,
     .datum {
       fill: none;
       stroke: #414559;
-      stroke-width: 4;
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
+    .datum { opacity: .78; }
     .signal {
       fill: #ca9ee6;
     }
@@ -22,6 +25,6 @@
     }
   </style>
   <circle class="aperture" cx="64" cy="64" r="56" />
-  <path class="datum" d="M2 97 126 31" />
-  <circle class="signal" cx="92" cy="40" r="14" />
+  <path class="datum" d="M6 94 122 34" />
+  <circle class="signal" cx="91" cy="40" r="14" />
 </svg>

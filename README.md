@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="docs/heed-logo.svg" alt="Heed logo" width="128" />
+</p>
+
 # Heed — floating agent instrument
+
+> **heed** /hiːd/ — from Old English *hēdan*: to attend to, take care, observe, guard and take charge.
 
 A UI-first experiment for a beautiful, lightweight Agent control surface: a
 summoned floating spine with panes that slide out beside it. One selected
