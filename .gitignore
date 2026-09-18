@@ -3,5 +3,4 @@ dist/
 .build/
 .DS_Store
 *.xcodeproj/
-.humanlayer/
 
