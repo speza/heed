@@ -130,7 +130,7 @@ function CentralAgentCard({ agent }: { readonly agent: Agent }) {
       <h1>{agent.name}</h1>
       <p>{agent.task}</p>
       <div className="agent-meta">
-        <span>{agent.provider}</span>
+        <span>{agent.runtime?.sourceLabel ?? agent.provider}</span>
         <i />
         <span>{agent.model}</span>
       </div>
@@ -296,12 +296,15 @@ function FocusList({
       <div className="focus-list-rows">
         {selected.runtime ? (
           <div className="runtime-location">
-            <span>Herdr location</span>
+            <span>{selected.runtime.sourceLabel} location</span>
             <dl>
-              <div><dt>Workspace</dt><dd>{selected.workspace ?? selected.runtime.workspaceId}</dd></div>
-              <div><dt>Tab</dt><dd>{selected.runtime.tabId}</dd></div>
-              <div><dt>Pane</dt><dd>{selected.runtime.paneId}</dd></div>
-              {selected.runtime.cwd ? <div><dt>Directory</dt><dd>{selected.runtime.cwd}</dd></div> : null}
+              {selected.workspace || selected.runtime.location?.workspaceId ? (
+                <div><dt>Workspace</dt><dd>{selected.workspace ?? selected.runtime.location?.workspaceId}</dd></div>
+              ) : null}
+              {selected.runtime.location?.tabId ? <div><dt>Tab</dt><dd>{selected.runtime.location.tabId}</dd></div> : null}
+              {selected.runtime.location?.paneId ? <div><dt>Pane</dt><dd>{selected.runtime.location.paneId}</dd></div> : null}
+              {selected.runtime.location?.cwd ? <div><dt>Directory</dt><dd>{selected.runtime.location.cwd}</dd></div> : null}
+              {!selected.runtime.location ? <div><dt>Location</dt><dd>Not exposed by this runtime</dd></div> : null}
             </dl>
           </div>
         ) : (
@@ -378,7 +381,7 @@ function TerminalCard({
             <time>{message.time}</time>
           </div>
         ))}
-        {agent.runtime ? (
+        {agent.runtime?.capabilities.terminal ? (
           <section className="runtime-output">
             <header><span>Connected terminal</span><small>Wheel or PageUp/PageDown to scroll</small></header>
             <TerminalOutput agentId={agent.id} />
@@ -531,7 +534,7 @@ function FleetView({
               </button>
             );
           })}
-          <div className="fleet-note"><Glyph name="branch" /><p>Herdr remains the runtime. This layer only indexes, focuses and sends commands.</p></div>
+          <div className="fleet-note"><Glyph name="branch" /><p>Agents may come from different runtimes. Controls appear only when a runtime supports them.</p></div>
         </aside>
         <div className="fleet-list">
           <div className="fleet-scroll">
@@ -550,7 +553,7 @@ function FleetView({
                     key={agent.id}
                   >
                     <span className="fleet-agent-copy"><strong>{agent.name}</strong><small>{agent.task}</small></span>
-                    <span className="fleet-agent-meta"><b>{agent.workspace ?? "minimal-ade"}</b><small>{agent.provider} · {agent.model}</small></span>
+                    <span className="fleet-agent-meta"><b>{agent.workspace ?? "minimal-ade"}</b><small>{agent.runtime?.sourceLabel ?? agent.provider} · {agent.model}</small></span>
                     <span className="fleet-elapsed">{agent.elapsed}</span>
                     {agent.attention ? <span className="fleet-attention">{agent.attention}</span> : <span className="fleet-open">↗</span>}
                   </button>
@@ -736,11 +739,11 @@ function HudBar({
 
 const runtimePlaceholder: Agent = {
   id: "runtime-placeholder",
-  name: "Connecting to Herdr",
+  name: "Connecting to runtimes",
   role: "Runtime",
-  task: "Waiting for the local Herdr server",
+  task: "Waiting for configured agent runtimes",
   status: "waiting",
-  provider: "Herdr",
+  provider: "Configured runtime",
   model: "Local",
   elapsed: "now",
   messages: [],
@@ -946,7 +949,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       }
       if (command || event.altKey || editable) return;
 
-      if (key === "t" && drawer === "focus" && !replyOpen && (demo || selected.runtime)) {
+      if (key === "t" && drawer === "focus" && !replyOpen && (demo || selected.runtime?.capabilities.terminal)) {
         event.preventDefault();
         setEvidence(null);
         setReplyOpen(true);
@@ -996,10 +999,11 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
 
   function openTerminal(id: string) {
     const agent = agents.find((candidate) => candidate.id === id);
-    if (!agent || (!demo && !agent.runtime)) return;
+    if (!agent) return;
     setSelectedId(id);
     setEvidence(null);
-    setReplyOpen(true);
+    if (demo || agent.runtime?.capabilities.terminal) setReplyOpen(true);
+    else setDrawer("focus");
   }
 
   async function openChangesFor(id: string) {
@@ -1010,11 +1014,15 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
     setReturnDrawer(drawer === "fleet" ? "fleet" : "focus");
     if (!agent.runtime) {
       if (!demo) {
-        setActionError("Herdr is unavailable.");
+        setActionError("No runtime is attached to this agent.");
         return;
       }
       setEvidence(null);
       setDrawer("diff");
+      return;
+    }
+    if (!agent.runtime.capabilities.workspaceChanges) {
+      setActionError(`${agent.runtime.sourceLabel} does not expose workspace changes.`);
       return;
     }
     try {
@@ -1098,11 +1106,13 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
                     Result{selected.result ? <em aria-label="has result">✓</em> : null}
                   </button>
                 ) : null}
-                <button className="chip" onClick={() => void openChanges()} type="button">
-                  {!demo ? "Workspace changes" : "Changes"}{selected.changes.length > 0 ? <em>{selected.changes.length}</em> : null}
-                </button>
+                {(demo || selected.runtime?.capabilities.workspaceChanges) ? (
+                  <button className="chip" onClick={() => void openChanges()} type="button">
+                    {!demo ? "Workspace changes" : "Changes"}{selected.changes.length > 0 ? <em>{selected.changes.length}</em> : null}
+                  </button>
+                ) : null}
                 <span className="bar-spacer" />
-                {(demo || selected.runtime) ? <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">Terminal <kbd>T</kbd></button> : null}
+                {(demo || selected.runtime?.capabilities.terminal) ? <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">Terminal <kbd>T</kbd></button> : null}
                 {demo ? <button className="chip chip-spawn" onClick={spawnChild} type="button"><Glyph name="branch" /> Spawn child</button> : null}
               </div>
             </motion.section>
@@ -1121,7 +1131,11 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
             />
           ) : null}
           {rendered.drawer === "diff" ? (
-            <DiffDrawer agent={selected} onClose={() => setDrawer(returnDrawer)} onTerminal={() => openTerminal(selected.id)} />
+            <DiffDrawer
+              agent={selected}
+              onClose={() => setDrawer(returnDrawer)}
+              onTerminal={demo || selected.runtime?.capabilities.terminal ? () => openTerminal(selected.id) : undefined}
+            />
           ) : null}
           {rendered.drawer === "help" ? (
             <KeyboardHelp onClose={() => setDrawer(helpReturnDrawer)} />

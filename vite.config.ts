@@ -1,6 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { herdrRuntimePlugin } from "./server/vite-plugin.ts";
+import { runtimeGatewayPlugin } from "./server/vite-plugin.ts";
 
 // The native shell loads dist/ over file://, where WKWebView refuses
 // ES-module scripts (opaque "null" origin, CORS). Emit a classic bundle
@@ -20,7 +20,7 @@ const shellFileCompat: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [react(), herdrRuntimePlugin(), shellFileCompat],
+  plugins: [react(), runtimeGatewayPlugin(), shellFileCompat],
   base: "./",
   build: {
     outDir: "dist",

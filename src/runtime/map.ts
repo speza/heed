@@ -16,16 +16,17 @@ export function runtimeStatus(status: RuntimeStatus): AgentStatus {
 
 export function runtimeAgent(agent: RuntimeAgent): Agent {
   const title = agent.terminalTitle?.trim();
-  const location = agent.workspaceLabel ?? agent.cwd ?? agent.workspaceId;
+  const location = agent.location;
+  const workspace = location?.workspaceLabel ?? location?.cwd ?? location?.workspaceId;
   return {
     id: agent.id,
     name: agent.name,
     role: agent.kind,
-    task: title && title !== agent.name ? title : agent.cwd ?? "Live Herdr agent",
+    task: title && title !== agent.name ? title : location?.cwd ?? `Live ${agent.source.label} agent`,
     status: runtimeStatus(agent.status),
-    provider: "Herdr",
-    model: agent.kind,
-    workspace: location,
+    provider: agent.provider ?? agent.source.label,
+    model: agent.model ?? agent.kind,
+    workspace,
     elapsed: "live",
     ...(agent.status === "blocked"
       ? { attention: "Waiting for input" }
@@ -35,10 +36,11 @@ export function runtimeAgent(agent: RuntimeAgent): Agent {
     messages: [],
     changes: [],
     runtime: {
-      paneId: agent.paneId,
-      workspaceId: agent.workspaceId,
-      tabId: agent.tabId,
-      cwd: agent.cwd,
+      sourceId: agent.source.id,
+      sourceLabel: agent.source.label,
+      sourceKind: agent.source.kind,
+      capabilities: agent.capabilities,
+      location,
       revision: agent.revision,
       interactiveReady: agent.interactiveReady,
       rawStatus: agent.status,

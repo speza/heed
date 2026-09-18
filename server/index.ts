@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import { extname, join, normalize, resolve } from "node:path";
-import { handleRuntimeRequest } from "./herdr.ts";
+import { handleRuntimeRequest } from "./runtime-gateway.ts";
+import { createRuntimeGateway } from "./runtime-config.ts";
 import { terminalGateway, type TerminalServerMessage } from "./terminal.ts";
 
 interface TerminalSocketData {
@@ -12,6 +13,7 @@ interface TerminalSocketData {
 
 const port = Number(process.env.HEED_PORT ?? "4311");
 const root = resolve(import.meta.dir, "../dist");
+const runtimeGateway = createRuntimeGateway();
 const contentTypes: Readonly<Record<string, string>> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -53,7 +55,7 @@ const server = Bun.serve<TerminalSocketData>({
         return new Response("Terminal WebSocket upgrade failed.", { status: 400 });
       return;
     }
-    const runtime = await handleRuntimeRequest(request);
+    const runtime = await handleRuntimeRequest(request, runtimeGateway);
     return runtime ?? staticResponse(url);
   },
   websocket: {

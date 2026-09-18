@@ -2,21 +2,48 @@ import type { FileChange } from "../types";
 
 export type RuntimeStatus = "working" | "idle" | "blocked" | "done" | "unknown";
 export type RuntimeConnection = "connecting" | "live" | "stale" | "offline" | "demo";
+export type RuntimeKind = "herdr" | "amp" | "api" | "other";
+
+/** The configured runtime that owns an Agent session. */
+export interface RuntimeSource {
+  readonly id: string;
+  readonly kind: RuntimeKind;
+  readonly label: string;
+}
+
+/** Optional surfaces exposed by a runtime; the UI must not infer these. */
+export interface RuntimeCapabilities {
+  readonly terminal: boolean;
+  readonly output: boolean;
+  readonly conversation: boolean;
+  readonly workspaceChanges: boolean;
+  readonly spawn: boolean;
+  readonly lineage: boolean;
+}
+
+/** Runtime-neutral location metadata. A source may expose only some fields. */
+export interface RuntimeLocation {
+  readonly workspaceId?: string;
+  readonly workspaceLabel?: string;
+  readonly tabId?: string;
+  readonly paneId?: string;
+  readonly cwd?: string;
+}
 
 export interface RuntimeAgent {
   readonly id: string;
-  readonly paneId: string;
+  readonly source: RuntimeSource;
   readonly name: string;
   readonly kind: string;
+  readonly provider?: string;
+  readonly model?: string;
   readonly status: RuntimeStatus;
-  readonly workspaceId: string;
-  readonly workspaceLabel?: string;
-  readonly tabId: string;
-  readonly cwd?: string;
+  readonly location?: RuntimeLocation;
   readonly terminalTitle?: string;
   readonly focused: boolean;
   readonly revision: number;
-  readonly interactiveReady: boolean;
+  readonly interactiveReady?: boolean;
+  readonly capabilities: RuntimeCapabilities;
 }
 
 export interface RuntimeSnapshot {
@@ -24,6 +51,7 @@ export interface RuntimeSnapshot {
   readonly version?: string;
   readonly protocol?: number;
   readonly fetchedAt: number;
+  readonly sources: readonly RuntimeSource[];
   readonly agents: readonly RuntimeAgent[];
   readonly error?: string;
 }

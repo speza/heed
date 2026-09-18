@@ -1,8 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { WebSocketServer } from "ws";
-import { handleRuntimeRequest } from "./herdr.ts";
+import { createRuntimeGateway } from "./runtime-config.ts";
+import { handleRuntimeRequest } from "./runtime-gateway.ts";
 import { terminalGateway } from "./terminal.ts";
+
+const runtimeGateway = createRuntimeGateway();
 
 async function bodyFor(request: IncomingMessage): Promise<Uint8Array | undefined> {
   if (request.method === "GET" || request.method === "HEAD") return undefined;
@@ -32,6 +35,7 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
       headers,
       body: body ? Buffer.from(body) : undefined,
     }),
+    runtimeGateway,
   );
   if (!result) return false;
   response.statusCode = result.status;
@@ -40,9 +44,9 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
   return true;
 }
 
-export function herdrRuntimePlugin(): Plugin {
+export function runtimeGatewayPlugin(): Plugin {
   return {
-    name: "heed-herdr-runtime",
+    name: "heed-runtime-gateway",
     configureServer(server) {
       const sockets = new WebSocketServer({ noServer: true });
       const terminalSocketPath = /^\/api\/runtime\/terminal\/([0-9a-f-]{36})\/socket$/u;

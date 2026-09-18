@@ -130,7 +130,7 @@ export function DiffDrawer({
 }: {
   readonly agent: Agent;
   readonly onClose: () => void;
-  readonly onTerminal: () => void;
+  readonly onTerminal?: () => void;
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
@@ -188,7 +188,7 @@ export function DiffDrawer({
           if (!active) return;
           event.preventDefault();
           setExpanded(active.path, !expandedPaths.has(active.path));
-        } else if (key === "t") {
+        } else if (key === "t" && onTerminal) {
           event.preventDefault();
           onTerminal();
         }
@@ -224,7 +224,7 @@ export function DiffDrawer({
         ))}
         {agent.changes.length === 0 ? <div className="empty-state">No changes from HEAD in this workspace.</div> : null}
       </div>
-      <div className="diff-drawer__keyboard-help"><span>↑↓ / J K</span> navigate <span>↵</span> expand <span>T</span> terminal <span>⌘W</span> back</div>
+      <div className="diff-drawer__keyboard-help"><span>↑↓ / J K</span> navigate <span>↵</span> expand {onTerminal ? <><span>T</span> terminal </> : null}<span>⌘W</span> back</div>
     </motion.section>
   );
 }

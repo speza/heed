@@ -1,3 +1,5 @@
+import type { RuntimeCapabilities, RuntimeKind, RuntimeLocation } from "./runtime/types";
+
 export type AgentStatus = "working" | "waiting" | "needs-you" | "done" | "failed" | "unknown";
 
 export interface ChatMessage {
@@ -19,12 +21,13 @@ export interface FileChange {
 }
 
 export interface RuntimeAgentMetadata {
-  readonly paneId: string;
-  readonly workspaceId: string;
-  readonly tabId: string;
-  readonly cwd?: string;
+  readonly sourceId: string;
+  readonly sourceLabel: string;
+  readonly sourceKind: RuntimeKind;
+  readonly capabilities: RuntimeCapabilities;
+  readonly location?: RuntimeLocation;
   readonly revision: number;
-  readonly interactiveReady: boolean;
+  readonly interactiveReady?: boolean;
   readonly rawStatus: "working" | "idle" | "blocked" | "done" | "unknown";
 }
 
