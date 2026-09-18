@@ -81,29 +81,54 @@ interface RuntimeSnapshot {
   readonly version?: string;
   readonly protocol?: number;
   readonly fetchedAt: number;
+  readonly sources: readonly RuntimeSource[];
   readonly agents: readonly RuntimeAgent[];
   readonly error?: string;
 }
 
+interface RuntimeSource {
+  readonly id: string;
+  readonly kind: "herdr" | "amp" | "api" | "other";
+  readonly label: string;
+}
+
+interface RuntimeCapabilities {
+  readonly terminal: boolean;
+  readonly output: boolean;
+  readonly conversation: boolean;
+  readonly workspaceChanges: boolean;
+  readonly spawn: boolean;
+  readonly lineage: boolean;
+}
+
+interface RuntimeLocation {
+  readonly workspaceId?: string;
+  readonly workspaceLabel?: string;
+  readonly tabId?: string;
+  readonly paneId?: string;
+  readonly cwd?: string;
+}
+
 interface RuntimeAgent {
   readonly id: string;
-  readonly paneId: string;
+  readonly source: RuntimeSource;
   readonly name: string;
   readonly kind: string;
+  readonly provider?: string;
+  readonly model?: string;
   readonly status: "working" | "idle" | "blocked" | "done" | "unknown";
-  readonly workspaceId: string;
-  readonly workspaceLabel?: string;
-  readonly tabId: string;
-  readonly cwd?: string;
+  readonly location?: RuntimeLocation;
   readonly terminalTitle?: string;
   readonly focused: boolean;
   readonly revision: number;
-  readonly interactiveReady: boolean;
+  readonly interactiveReady?: boolean;
+  readonly capabilities: RuntimeCapabilities;
 }
 ```
 
-The adapter uses the Herdr pane ID as an opaque target. It must not expose
-Herdr protocol records directly to React.
+The gateway uses the namespaced Agent ID to route requests to the owning
+adapter. The Herdr adapter keeps its pane ID as an internal target and must not
+expose Herdr protocol records directly to React.
 
 Only recognized agent panes are returned. Ordinary shell panes are not Heed
 Agents.

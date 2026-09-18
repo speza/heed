@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
+import type { FileChange } from "../src/types.ts";
+import type { RuntimeAgent, RuntimeCapabilities, RuntimeChanges, RuntimeLocation, RuntimeSource } from "../src/runtime/types.ts";
+import { RuntimeAdapterError } from "./runtime-gateway.ts";
+import type { RuntimeAdapter, RuntimeAdapterSnapshot, RuntimeOutputRequest, RuntimeTerminalDimensions } from "./runtime-gateway.ts";
 import { terminalGateway } from "./terminal.ts";
 
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -51,30 +55,23 @@ interface HerdrSnapshotEnvelope {
   };
 }
 
-interface NormalizedAgent {
-  readonly id: string;
-  readonly paneId: string;
-  readonly name: string;
-  readonly kind: string;
-  readonly status: "working" | "idle" | "blocked" | "done" | "unknown";
-  readonly workspaceId: string;
-  readonly workspaceLabel?: string;
-  readonly tabId: string;
-  readonly cwd?: string;
-  readonly terminalTitle?: string;
-  readonly focused: boolean;
-  readonly revision: number;
-  readonly interactiveReady: boolean;
+const HERDR_SOURCE = { id: "herdr-local", kind: "herdr", label: "Herdr" } as const satisfies RuntimeSource;
+const HERDR_CAPABILITIES = {
+  terminal: true,
+  output: true,
+  conversation: false,
+  workspaceChanges: true,
+  spawn: false,
+  lineage: false,
+} as const satisfies RuntimeCapabilities;
+
+interface NormalizedAgent extends RuntimeAgent {
+  readonly source: typeof HERDR_SOURCE;
+  readonly capabilities: typeof HERDR_CAPABILITIES;
+  readonly location: RuntimeLocation & { readonly workspaceId: string; readonly tabId: string };
 }
 
-interface NormalizedSnapshot {
-  readonly available: boolean;
-  readonly version?: string;
-  readonly protocol?: number;
-  readonly fetchedAt: number;
-  readonly agents: readonly NormalizedAgent[];
-  readonly error?: string;
-}
+type NormalizedSnapshot = Omit<RuntimeAdapterSnapshot, "agents"> & { readonly agents: readonly NormalizedAgent[] };
 
 function boundedText(value: string, maximum = 240): string {
   return value.replace(/\s+/gu, " ").trim().slice(0, maximum);
@@ -167,19 +164,23 @@ async function readSnapshot(): Promise<NormalizedSnapshot> {
       const workspace = workspaces.get(agent.workspace_id);
       const cwd = workspace?.worktree?.checkout_path ?? agent.foreground_cwd ?? agent.cwd;
       return [{
-        id: agent.pane_id,
-        paneId: agent.pane_id,
+        id: `${HERDR_SOURCE.id}:${agent.pane_id}`,
+        source: HERDR_SOURCE,
         name: agent.name ?? agent.title ?? agent.terminal_title_stripped ?? `${agent.agent} · ${agent.pane_id}`,
         kind: agent.display_agent ?? agent.agent,
         status: status(agent.agent_status),
-        workspaceId: agent.workspace_id,
-        ...(workspace?.label ? { workspaceLabel: workspace.label } : {}),
-        tabId: agent.tab_id,
-        ...(cwd ? { cwd } : {}),
+        location: {
+          workspaceId: agent.workspace_id,
+          ...(workspace?.label ? { workspaceLabel: workspace.label } : {}),
+          tabId: agent.tab_id,
+          paneId: agent.pane_id,
+          ...(cwd ? { cwd } : {}),
+        },
         ...(agent.terminal_title_stripped ? { terminalTitle: agent.terminal_title_stripped } : {}),
         focused: agent.focused === true,
         revision: agent.revision ?? 0,
         interactiveReady: agent.interactive_ready !== false,
+        capabilities: HERDR_CAPABILITIES,
       }];
     });
     return {
@@ -192,14 +193,6 @@ async function readSnapshot(): Promise<NormalizedSnapshot> {
   } catch {
     return { available: false, fetchedAt, agents: [], error: "Herdr returned an invalid snapshot." };
   }
-}
-
-async function targetAgent(id: string): Promise<NormalizedAgent> {
-  const snapshot = await readSnapshot();
-  if (!snapshot.available) throw new ApiError(503, snapshot.error ?? "Herdr is unavailable.");
-  const agent = snapshot.agents.find((candidate) => candidate.id === id);
-  if (!agent) throw new ApiError(404, "That Herdr agent is no longer available.");
-  return agent;
 }
 
 function splitPatch(patch: string): string[] {
@@ -216,14 +209,14 @@ function patchPath(patch: string): string | undefined {
   return deleted;
 }
 
-function patchChange(patch: string) {
+function patchChange(patch: string): FileChange | undefined {
   const path = patchPath(patch);
   if (!path) return undefined;
   const lines = patch.split("\n");
   const additions = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
   const deletions = lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
   const binary = /^(Binary files|GIT binary patch)/mu.test(patch);
-  const kind = /^--- \/dev\/null$/mu.test(patch)
+  const kind: FileChange["kind"] = /^--- \/dev\/null$/mu.test(patch)
     ? "added"
     : /^\+\+\+ \/dev\/null$/mu.test(patch)
       ? "deleted"
@@ -264,17 +257,18 @@ async function addSyntaxSources(root: string, file: NonNullable<ReturnType<typeo
   return { ...file, ...(oldFile ? { oldFile } : {}), ...(newFile ? { newFile } : {}) };
 }
 
-async function workspaceChanges(agent: NormalizedAgent) {
-  if (!agent.cwd) throw new ApiError(404, "Herdr did not report a workspace for this agent.");
-  const rootResult = await command(["git", "-C", agent.cwd, "rev-parse", "--show-toplevel"]);
-  if (rootResult.exitCode !== 0) throw new ApiError(404, "The agent workspace is not a Git worktree.");
+async function workspaceChanges(agent: RuntimeAgent): Promise<RuntimeChanges> {
+  const cwd = agent.location?.cwd;
+  if (!cwd) throw new RuntimeAdapterError(404, "Herdr did not report a workspace for this agent.");
+  const rootResult = await command(["git", "-C", cwd, "rev-parse", "--show-toplevel"]);
+  if (rootResult.exitCode !== 0) throw new RuntimeAdapterError(404, "The agent workspace is not a Git worktree.");
   const root = rootResult.stdout.trim();
   const tracked = await command(["git", "-C", root, "diff", "--no-ext-diff", "--no-renames", "--binary", "HEAD", "--"]);
   if (tracked.exitCode !== 0 || tracked.truncated)
-    throw new ApiError(502, tracked.truncated ? "The workspace diff is too large." : commandError(tracked, "Git diff failed."));
+    throw new RuntimeAdapterError(502, tracked.truncated ? "The workspace diff is too large." : commandError(tracked, "Git diff failed."));
 
   const untrackedResult = await command(["git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z"]);
-  if (untrackedResult.exitCode !== 0) throw new ApiError(502, commandError(untrackedResult, "Git status failed."));
+  if (untrackedResult.exitCode !== 0) throw new RuntimeAdapterError(502, commandError(untrackedResult, "Git status failed."));
   const untracked = untrackedResult.stdout.split("\0").filter(Boolean);
   const patches = splitPatch(tracked.stdout);
   let partial = untracked.length > MAX_UNTRACKED_FILES;
@@ -303,62 +297,51 @@ async function workspaceChanges(agent: NormalizedAgent) {
   };
 }
 
-class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
+export class HerdrRuntimeAdapter implements RuntimeAdapter {
+  readonly source = HERDR_SOURCE;
+
+  async snapshot(): Promise<RuntimeAdapterSnapshot> {
+    return readSnapshot();
   }
-}
 
-function json(body: unknown, status = 200): Response {
-  return Response.json(body, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
-}
+  async readOutput(id: string, request: RuntimeOutputRequest) {
+    const agent = await this.targetAgent(id);
+    const paneId = agent.location?.paneId;
+    if (!paneId) throw new RuntimeAdapterError(404, "Herdr did not report a pane for this agent.");
+    const result = await command([
+      "herdr", "agent", "read", paneId,
+      "--source", request.source,
+      "--lines", String(request.lines),
+      "--format", request.format,
+    ]);
+    if (result.exitCode !== 0) throw new RuntimeAdapterError(502, commandError(result, "Herdr output could not be read."));
+    return { text: result.stdout, format: request.format, revision: agent.revision, truncated: result.truncated };
+  }
 
-export async function handleRuntimeRequest(request: Request): Promise<Response | undefined> {
-  const url = new URL(request.url);
-  if (!url.pathname.startsWith("/api/runtime")) return undefined;
-  try {
-    const origin = request.headers.get("origin");
-    if (origin && origin !== url.origin) throw new ApiError(403, "Request origin rejected.");
-    if (request.method === "GET" && url.pathname === "/api/runtime") return json(await readSnapshot());
-    const terminalRelease = /^\/api\/runtime\/terminal\/([0-9a-f-]{36})$/u.exec(url.pathname);
-    if (request.method === "DELETE" && terminalRelease?.[1]) {
-      await terminalGateway.release(terminalRelease[1]);
-      return json({ ok: true, message: "Terminal session released." });
-    }
-    const terminalOpen = /^\/api\/runtime\/agents\/([^/]+)\/terminal$/u.exec(url.pathname);
-    if (request.method === "POST" && terminalOpen?.[1]) {
-      const agent = await targetAgent(decodeURIComponent(terminalOpen[1]));
-      const payload = (await request.json()) as { columns?: unknown; rows?: unknown };
-      try {
-        return json(await terminalGateway.open(agent.paneId, payload));
-      } catch (error) {
-        throw new ApiError(409, error instanceof Error ? error.message : "Terminal session could not be opened.");
-      }
-    }
-    const match = /^\/api\/runtime\/agents\/([^/]+)\/(output|changes)$/u.exec(url.pathname);
-    if (!match) throw new ApiError(404, "Runtime endpoint not found.");
-    const id = decodeURIComponent(match[1]!);
-    const action = match[2]!;
-    const agent = await targetAgent(id);
+  async readChanges(id: string): Promise<RuntimeChanges> {
+    return workspaceChanges(await this.targetAgent(id));
+  }
 
-    if (request.method === "GET" && action === "output") {
-      const requestedLines = Number(url.searchParams.get("lines") ?? "200");
-      const lines = Number.isInteger(requestedLines) ? Math.min(400, Math.max(20, requestedLines)) : 200;
-      const format = url.searchParams.get("format") === "ansi" ? "ansi" : "text";
-      const source = url.searchParams.get("source") === "visible" ? "visible" : "recent-unwrapped";
-      const result = await command([
-        "herdr", "agent", "read", agent.paneId,
-        "--source", source,
-        "--lines", String(lines),
-        "--format", format,
-      ]);
-      if (result.exitCode !== 0) throw new ApiError(502, commandError(result, "Herdr output could not be read."));
-      return json({ text: result.stdout, format, revision: agent.revision, truncated: result.truncated });
+  async openTerminal(id: string, dimensions: RuntimeTerminalDimensions) {
+    const agent = await this.targetAgent(id);
+    const paneId = agent.location?.paneId;
+    if (!paneId) throw new RuntimeAdapterError(404, "Herdr did not report a pane for this agent.");
+    try {
+      return await terminalGateway.open(paneId, dimensions);
+    } catch (error) {
+      throw new RuntimeAdapterError(409, error instanceof Error ? error.message : "Terminal session could not be opened.");
     }
-    if (request.method === "GET" && action === "changes") return json(await workspaceChanges(agent));
-    throw new ApiError(405, "Method not allowed.");
-  } catch (error) {
-    if (error instanceof ApiError) return json({ error: error.message }, error.status);
-    return json({ error: "The Heed runtime adapter failed unexpectedly." }, 500);
+  }
+
+  async releaseTerminal(sessionId: string): Promise<void> {
+    await terminalGateway.release(sessionId);
+  }
+
+  private async targetAgent(id: string): Promise<RuntimeAgent> {
+    const snapshot = await readSnapshot();
+    if (!snapshot.available) throw new RuntimeAdapterError(503, snapshot.error ?? "Herdr is unavailable.");
+    const agent = snapshot.agents.find((candidate) => candidate.id === id);
+    if (!agent) throw new RuntimeAdapterError(404, "That Herdr agent is no longer available.");
+    return agent;
   }
 }

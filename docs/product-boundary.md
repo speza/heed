@@ -8,12 +8,17 @@ attention state, with search across task and workspace. Selecting a fleet row
 returns to the local constellation. This avoids asking a graph to be both a
 mental model and a high-density operations table.
 
-Herdr remains the runtime and source of truth. The first integration discovers
-recognized agents, reads status, renders an interactive Herdr terminal stream,
-and reads workspace-level Git evidence. Lineage and spawning
-remain deferred until Herdr can expose durable relationships. Herdr retains PTY
-and process ownership; Heed's xterm surface controls only transient presentation
-size while it is attached.
+Herdr is the first runtime adapter and source of truth for the first live
+slice. The normalized gateway contract is designed to aggregate agents from
+multiple runtimes: a terminal-oriented source may expose panes and PTYs while
+an API-oriented source may expose structured conversation without either.
+Each Agent carries its source and declared capabilities; the UI must not infer
+terminal, workspace, spawning or lineage support.
+
+Herdr retains PTY and process ownership; Heed's xterm surface controls only
+transient presentation size while it is attached. Additional runtime adapters,
+including Amp or direct API sessions, remain deferred until the common contract
+is validated (ADR-0010).
 
 Status: live Herdr triage hypothesis under evaluation
 

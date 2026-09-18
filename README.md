@@ -24,7 +24,14 @@ bun run dev
 ```
 
 Open the URL printed by Vite. Herdr must be running for live data. Add
-`?demo=1` to use the synthetic fixture fleet instead.
+`?demo=1` to use the synthetic fixture fleet instead. To exercise a mixed fleet
+locally, opt into the synthetic non-terminal adapter:
+
+```sh
+HEED_ENABLE_MOCK_RUNTIME=1 bun run dev
+```
+
+The mock source is deliberately opt-in and never mixed into normal live mode.
 
 ## Run as a macOS floating panel
 
@@ -62,8 +69,10 @@ never resizes while summoned; panes compose inside the stage (see
 
 Summon one lightweight surface, see what needs you, and get out of the way.
 The constellation is local context, never a global graph (ADR-0001); the fleet
-is the escape hatch for scale. Herdr remains the runtime and source of truth
-(ADR-0002); this app provides only a thin control and navigation layer.
+is the escape hatch for scale. Herdr is the first runtime adapter and source of
+truth for the live slice (ADR-0002, ADR-0010); this app provides only a thin
+control and navigation layer. The normalized runtime contract is designed to
+combine terminal-based and API-based sessions without requiring every Agent to
+have a pane or PTY.
 
-The eventual session transport, provider adapters and remote runtimes remain
-outside this POC.
+Additional real runtime adapters and remote runtimes remain outside this POC.

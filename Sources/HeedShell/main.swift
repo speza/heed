@@ -251,14 +251,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     layoutBarSurface()
     layoutDrawerSurface()
     panel.alphaValue = 0
-    panel.makeKeyAndOrderFront(nil)
-    NSApp.activate(ignoringOtherApps: true)
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0.16
-      context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-      panel.animator().alphaValue = 1
-    }
+    focusPanel()
+    NSAnimationContext.runAnimationGroup(
+      { context in
+        context.duration = 0.16
+        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        panel.animator().alphaValue = 1
+      },
+      completionHandler: { [weak self] in
+        // Activation and key-window promotion can settle on different run-loop
+        // turns when the global hotkey came from another application. Reassert
+        // focus after the reveal so the next key, including Escape, reaches
+        // WebKit reliably.
+        Task { @MainActor in
+          self?.focusPanel()
+        }
+      }
+    )
     webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('heed:shown'))")
+  }
+
+  private func focusPanel() {
+    NSApp.activate(ignoringOtherApps: true)
+    panel.orderFrontRegardless()
+    panel.makeKey()
+    panel.makeFirstResponder(webView)
   }
 
   private func hidePanel() {
