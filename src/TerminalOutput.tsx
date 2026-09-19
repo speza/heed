@@ -57,7 +57,12 @@ export function TerminalOutput({ agentId }: { readonly agentId: string }) {
     let reconnectAttempts = 0;
     let lastDeliveryId: number | undefined;
     let hasRenderedFrame = false;
-    const dimensions = () => ({ columns: terminal.cols, rows: terminal.rows });
+    const boundedDimension = (value: number, minimum: number, maximum: number, fallback: number) =>
+      Number.isInteger(value) && value > 0 ? Math.min(maximum, Math.max(minimum, value)) : fallback;
+    const dimensions = () => ({
+      columns: boundedDimension(terminal.cols, 20, 400, 80),
+      rows: boundedDimension(terminal.rows, 8, 240, 24),
+    });
     const sendMessage = (message: object) => {
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     };
@@ -141,7 +146,8 @@ export function TerminalOutput({ agentId }: { readonly agentId: string }) {
       });
     };
 
-    void openAgentTerminal(agentId, terminal.cols, terminal.rows)
+    const initialDimensions = dimensions();
+    void openAgentTerminal(agentId, initialDimensions.columns, initialDimensions.rows)
       .then((opened) => {
         if (disposed) {
           void releaseAgentTerminal(opened.sessionId);

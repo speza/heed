@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { App } from "./App";
 import { initialAgents } from "./fixtures";
@@ -10,7 +10,19 @@ vi.mock("@git-diff-view/react", () => ({
   DiffView: () => <div data-testid="diff-view" />,
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  delete (document as unknown as { elementFromPoint?: Document["elementFromPoint"] }).elementFromPoint;
+});
+
+function mockElementFromPoint(target: Element | null) {
+  const hitTest = vi.fn((_x: number, _y: number): Element | null => target);
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: hitTest,
+  });
+  return hitTest;
+}
 
 describe("summoned hud", () => {
   test("every non-root fixture has an existing parent", () => {
@@ -36,6 +48,126 @@ describe("summoned hud", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close fleet" }));
     expect(screen.queryByRole("heading", { name: "Needs you" })).not.toBeInTheDocument();
     expect(triage).toBeInTheDocument();
+  });
+
+  test("surfaces attention and completed conversations beside the collapsed rail", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
+
+    const peek = screen.getByRole("complementary", { name: "Conversation updates" });
+    expect(within(peek).getByRole("button", { name: /Herdr adapter · Review patch/ })).toBeInTheDocument();
+    expect(within(peek).getByRole("button", { name: /Interaction study · Done/ })).toBeInTheDocument();
+    expect(within(peek).getByRole("button", { name: /more updates/ })).toBeInTheDocument();
+
+    fireEvent.click(within(peek).getByRole("button", { name: /Herdr adapter/ }));
+    expect(screen.getByLabelText("Terminal for Herdr adapter")).toBeInTheDocument();
+  });
+
+  test("acknowledges a completed conversation locally after opening it", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
+    const peek = screen.getByRole("complementary", { name: "Conversation updates" });
+    fireEvent.click(within(peek).getByRole("button", { name: /Interaction study · Done/ }));
+    expect(screen.getByLabelText("Terminal for Interaction study")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Interaction study · Done/ })).not.toBeInTheDocument();
+  });
+
+  test("focuses the update rail with the summon event and opens the full fleet with F", () => {
+    render(<App />);
+
+    fireEvent(window, new Event("heed:focus-list"));
+
+    const peek = screen.getByRole("complementary", { name: "Conversation updates" });
+    const first = within(peek).getByRole("button", { name: /Herdr adapter/ });
+    expect(peek).toHaveClass("is-expanded");
+    expect(document.activeElement).toBe(first);
+    expect(first).toHaveAttribute("aria-current", "true");
+
+    fireEvent(window, new Event("blur"));
+    expect(peek).toHaveClass("is-compact");
+    fireEvent.mouseEnter(document.querySelector(".hud")!);
+    expect(peek).toHaveClass("is-expanded");
+    fireEvent.mouseLeave(document.querySelector(".hud")!);
+    expect(peek).toHaveClass("is-compact");
+    fireEvent(window, new Event("focus"));
+    expect(peek).toHaveClass("is-expanded");
+
+    fireEvent.keyDown(window, { key: "f" });
+    expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
+  });
+
+  test("mirrors inactive rail entry and exit from the native shell", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
+
+    const peek = screen.getByRole("complementary", { name: "Conversation updates" });
+    fireEvent(window, new Event("blur"));
+    expect(peek).toHaveClass("is-compact");
+
+    fireEvent(window, new Event("heed:rail-hover"));
+    expect(peek).toHaveClass("is-expanded");
+    fireEvent(window, new Event("heed:rail-hover"));
+    expect(peek).toHaveClass("is-expanded");
+
+    fireEvent(window, new Event("heed:rail-hover-end"));
+    expect(peek).toHaveClass("is-compact");
+    fireEvent(window, new Event("heed:rail-hover-end"));
+    expect(peek).toHaveClass("is-compact");
+  });
+
+  test("mirrors inactive pointer hover and first-click actions from the native shell", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
+
+    const peek = screen.getByRole("complementary", { name: "Conversation updates" });
+    const first = within(peek).getByRole("button", { name: /Herdr adapter/ });
+    const second = within(peek).getByRole("button", { name: /Migration review/ });
+    const hitTest = mockElementFromPoint(first);
+
+    fireEvent(window, new CustomEvent("heed:rail-pointer", { detail: { x: 12, y: 16 } }));
+    expect(first).toHaveClass("is-native-hover");
+
+    hitTest.mockReturnValue(second);
+    fireEvent(window, new CustomEvent("heed:rail-pointer", { detail: { x: 12, y: 48 } }));
+    expect(first).not.toHaveClass("is-native-hover");
+    expect(second).toHaveClass("is-native-hover");
+    expect(second).toHaveAttribute("aria-current", "true");
+
+    fireEvent(window, new Event("heed:rail-hover-end"));
+    expect(second).not.toHaveClass("is-native-hover");
+
+    hitTest.mockReturnValue(peek);
+    const hitTestsBeforeInvalidPointer = hitTest.mock.calls.length;
+    fireEvent(window, new CustomEvent("heed:rail-pointer", { detail: {} }));
+    expect(hitTest).toHaveBeenCalledTimes(hitTestsBeforeInvalidPointer);
+    fireEvent(window, new CustomEvent("heed:rail-click", { detail: { x: 40, y: 40 } }));
+    expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument();
+
+    hitTest.mockReturnValue(first);
+    fireEvent(window, new CustomEvent("heed:rail-click", { detail: { x: 12, y: 16 } }));
+    expect(screen.getByLabelText("Terminal for Herdr adapter")).toBeInTheDocument();
+  });
+
+  test("cycles collapsed updates with alternate arrow keys and opens the selected terminal", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
+
+    const peek = screen.getByRole("complementary", { name: "Conversation updates" });
+    const first = within(peek).getByRole("button", { name: /Herdr adapter/ });
+    const second = within(peek).getByRole("button", { name: /Migration review/ });
+    expect(first).toHaveAttribute("aria-current", "true");
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(second).toHaveAttribute("aria-current", "true");
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(screen.getByLabelText("Terminal for Migration review")).toBeInTheDocument();
   });
 
   test("recentres the selected child and opens its keyboard-navigable diff", async () => {
@@ -100,13 +232,13 @@ describe("summoned hud", () => {
     expect(screen.getByLabelText(/Terminal for/)).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "w", metaKey: true });
     await waitFor(() => expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument());
-    expect(screen.getByRole("heading", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
 
-    fireEvent.keyDown(fleet, { key: "a" });
+    fireEvent.keyDown(window, { key: "f" });
     expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
-    fireEvent.keyDown(fleet, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("heading", { name: "All agents" })).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: /need you/ })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
   });
 
   test("toggles the main pane without hiding the sidebar", async () => {
@@ -125,22 +257,22 @@ describe("summoned hud", () => {
 
     fireEvent.keyDown(window, { key: "?", shiftKey: true });
     expect(screen.getByRole("heading", { name: "Keyboard shortcuts" })).toBeInTheDocument();
-    expect(screen.getByText("Open / collapse main pane")).toBeInTheDocument();
+    expect(screen.getByText("Focus update rail")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "?", shiftKey: true });
     expect(screen.queryByRole("heading", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Synthesis lead" })).toBeInTheDocument();
   });
 
-  test("restores attention-list focus whenever the native panel is summoned", async () => {
+  test("restores update-rail focus whenever the native panel is summoned", async () => {
     render(<App />);
     fireEvent(window, new Event("heed:hidden"));
-    const fleet = await screen.findByRole("heading", { name: "Needs you" }).then((heading) => heading.closest(".fleet-drawer")!);
-    (fleet as HTMLElement).blur();
 
     fireEvent(window, new Event("heed:shown"));
-    await waitFor(() => expect(document.activeElement).toBe(fleet));
-    fireEvent.keyDown(fleet, { key: "a" });
+    const peek = await screen.findByRole("complementary", { name: "Conversation updates" });
+    const first = within(peek).getByRole("button", { name: /Herdr adapter/ });
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    fireEvent.keyDown(first, { key: "f" });
     expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
   });
 
@@ -161,24 +293,22 @@ describe("summoned hud", () => {
     expect(fleet.querySelector(".is-selected")?.getAttribute("data-agent-id")).not.toBe(before);
   });
 
-  test("keeps Escape in the terminal and uses Command-W to return", async () => {
+  test("returns from the terminal to the update rail with Escape or Command-W", async () => {
     render(<App />);
     fireEvent.keyDown(window, { key: "t" });
 
     const terminal = screen.getByLabelText("Terminal for Synthesis lead");
-    expect(screen.getByText("Back to agents")).toBeInTheDocument();
+    expect(screen.getByText("Back to update rail")).toBeInTheDocument();
     expect(screen.getByText("⌘W")).toBeInTheDocument();
     const terminalInput = document.createElement("div");
     terminalInput.className = "terminal-frame";
     terminal.append(terminalInput);
     fireEvent.keyDown(terminalInput, { key: "Escape" });
-    expect(terminal).toBeInTheDocument();
+    expect(screen.getByLabelText("Terminal for Synthesis lead")).toBeInTheDocument();
 
+    // Command-W is also handled before the terminal guard when the terminal is open.
     fireEvent.keyDown(window, { key: "w", metaKey: true });
     await waitFor(() => expect(screen.queryByLabelText("Terminal for Synthesis lead")).not.toBeInTheDocument());
-    expect(screen.getByRole("heading", { name: "Synthesis lead" })).toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.getByRole("heading", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
   });
 });

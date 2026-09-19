@@ -32,13 +32,22 @@ interface OrbitNode {
 }
 
 /** Panel geometry the native shell mirrors; width is constant so only height animates. */
-function panelSize(drawer: Drawer | null, edge: Edge, _mode: FocusMode) {
+function panelSize(
+  drawer: Drawer | null,
+  edge: Edge,
+  _mode: FocusMode,
+  hasConversationPeek = false,
+) {
   // One stage size for every open drawer: ⌘-cycling swaps panes inside a
   // constant window, so switching can never flicker the native geometry.
   if (drawer !== null) {
     return edge === "right" ? { width: 1120, height: 860 } : { width: 1040, height: 840 };
   }
-  return edge === "right" ? { width: 76, height: 260 } : { width: 776, height: 76 };
+  return edge === "right"
+    ? hasConversationPeek
+      ? { width: 300, height: 260 }
+      : { width: 76, height: 260 }
+    : { width: 776, height: 76 };
 }
 
 function drawerSize(drawer: Drawer | null, _edge: Edge, _mode: FocusMode) {
@@ -60,7 +69,6 @@ const easeOutExpo: [number, number, number, number] = [0.22, 1, 0.36, 1];
 const enterTransition = { duration: 0.16, ease: easeOutExpo };
 const exitTransition = { duration: 0.11, ease: "easeIn" as const };
 const glideTransition = { duration: 0.18, ease: "easeOut" as const };
-
 const attentionPriority: Record<AgentStatus, number> = {
   "needs-you": 0,
   failed: 1,
@@ -74,6 +82,14 @@ function needsAttention(agent: Agent) {
   return agent.status === "needs-you" || agent.status === "failed" || agent.attention !== undefined;
 }
 
+function doneRevision(agent: Agent) {
+  return agent.runtime?.revision ?? 0;
+}
+
+function isDoneAcknowledged(agent: Agent, acknowledgedDone: Readonly<Record<string, number>>) {
+  return agent.status === "done" && acknowledgedDone[agent.id] === doneRevision(agent);
+}
+
 function shellMessage(type: string, payload: Record<string, unknown> = {}) {
   const bridge = (
     window as typeof window & {
@@ -83,6 +99,18 @@ function shellMessage(type: string, payload: Record<string, unknown> = {}) {
     }
   ).webkit?.messageHandlers?.shell;
   bridge?.postMessage({ type, ...payload });
+}
+
+interface NativePointerDetail {
+  readonly x?: number;
+  readonly y?: number;
+}
+
+function nativeInteractiveTarget(detail: NativePointerDetail) {
+  if (typeof detail.x !== "number" || typeof detail.y !== "number") return null;
+  return document
+    .elementFromPoint(detail.x, detail.y)
+    ?.closest<HTMLElement>("button, a, [role=\"button\"], summary") ?? null;
 }
 
 function Glyph({ name }: { readonly name: "close" | "spark" | "branch" | "command" | "fleet" }) {
@@ -369,8 +397,8 @@ function TerminalCard({
       <header className="reply-head">
         <StatusMark status={agent.status} />
         <strong>{agent.name}</strong>
-        <span className="terminal-back-hint">Back to agents <kbd>⌘W</kbd></span>
-        <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to agents (Command-W)" type="button"><Glyph name="close" /></button>
+        <span className="terminal-back-hint">Back to update rail <kbd>⌘W</kbd></span>
+        <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to update rail (Command-W)" type="button"><Glyph name="close" /></button>
       </header>
       <div className="reply-log">
         {messages.length === 0 && !agent.runtime ? <EmptyState>Nothing yet. Say what you need.</EmptyState> : null}
@@ -661,7 +689,7 @@ function CommandPalette({
             );
           })}
         </div>
-        <footer><span>↑↓ navigate</span><span>↵ run</span><span>⌥Space attention</span><span>esc close</span></footer>
+        <footer><span>↑↓ navigate</span><span>↵ run</span><span>⌥Space focus rail</span><span>esc close</span></footer>
       </motion.div>
     </motion.div>
   );
@@ -669,9 +697,9 @@ function CommandPalette({
 
 function KeyboardHelp({ onClose }: { readonly onClose: () => void }) {
   const groups = [
-    { title: "Global", shortcuts: [["⌥Space", "Open / collapse main pane"], ["?", "Keyboard shortcuts"], ["⌘K", "Command palette"], ["Sidebar ×", "Hide Heed"]] },
+    { title: "Global", shortcuts: [["⌥Space", "Focus update rail"], ["F", "Open full session list"], ["↑ ↓ / J K", "Cycle focused updates"], ["Enter", "Open selected update"], ["?", "Keyboard shortcuts"], ["⌘K", "Command palette"], ["Sidebar ×", "Hide Heed"]] },
     { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Navigate"], ["↵ / T", "Open terminal"], ["D", "Workspace changes"], ["/", "Search"], ["A", "Attention / all"], ["Esc", "Collapse to sidebar"]] },
-    { title: "Terminal", shortcuts: [["⌘W", "Back to agents"], ["Esc", "Terminal input"], ["Wheel / PgUp PgDn", "Scroll"]] },
+    { title: "Terminal", shortcuts: [["Esc", "Terminal input"], ["⌘W", "Back to update rail"], ["Wheel / PgUp PgDn", "Scroll"]] },
   ] as const;
 
   return (
@@ -706,6 +734,7 @@ function HudBar({
   onTriage,
   onFleet,
   onHelp,
+  onHover,
   connection,
 }: {
   readonly attentionCount: number;
@@ -713,10 +742,11 @@ function HudBar({
   readonly onTriage: () => void;
   readonly onFleet: () => void;
   readonly onHelp: () => void;
+  readonly onHover: () => void;
   readonly connection: RuntimeConnection;
 }) {
   return (
-    <footer className="hud-bar" data-native-drag>
+    <footer className="hud-bar" onMouseEnter={onHover} onPointerEnter={onHover}>
       <button className="bar-agent" onClick={onFocusToggle} type="button" aria-label={`Runtime ${connection}; toggle focus drawer`}>
         <ApertureMark connection={connection} />
       </button>
@@ -738,6 +768,94 @@ function HudBar({
   );
 }
 
+function ConversationPeek({
+  agents,
+  navigationAgents,
+  activeId,
+  nativeHoverId,
+  focusRequest,
+  expanded,
+  onActive,
+  onSelect,
+  onMore,
+}: {
+  readonly agents: readonly Agent[];
+  readonly navigationAgents: readonly Agent[];
+  readonly activeId: string;
+  readonly nativeHoverId?: string;
+  readonly focusRequest: number;
+  readonly expanded: boolean;
+  readonly onActive: (id: string) => void;
+  readonly onSelect: (id: string) => void;
+  readonly onMore: () => void;
+}) {
+  const activeButton = useRef<HTMLButtonElement>(null);
+  const handledFocusRequest = useRef(0);
+  const maxVisible = 5;
+  const firstAgents = agents.slice(0, maxVisible);
+  const activeAgent = navigationAgents.find((agent) => agent.id === activeId);
+  const visibleAgents = activeAgent && !firstAgents.some((agent) => agent.id === activeId)
+    ? [...firstAgents.slice(0, maxVisible - 1), activeAgent]
+    : firstAgents;
+  const hiddenCount = Math.max(0, navigationAgents.length - visibleAgents.length);
+
+  useEffect(() => {
+    if (!expanded || focusRequest === handledFocusRequest.current) return;
+    handledFocusRequest.current = focusRequest;
+    activeButton.current?.focus();
+  }, [focusRequest, expanded]);
+
+  const agentButton = (agent: Agent) => {
+    const update = needsAttention(agent) ? agent.attention ?? statusLabels[agent.status] : statusLabels[agent.status];
+    const active = agent.id === activeId;
+    return (
+      <button
+        key={agent.id}
+        ref={active ? activeButton : undefined}
+        className={`conversation-peek-item status-surface-${agent.status} ${active ? "is-selected" : ""} ${agent.id === nativeHoverId ? "is-native-hover" : ""}`}
+        data-agent-id={agent.id}
+        type="button"
+        aria-label={`${agent.name} · ${update}`}
+        aria-current={active ? "true" : undefined}
+        onFocus={() => onActive(agent.id)}
+        onMouseEnter={() => onActive(agent.id)}
+        onClick={() => onSelect(agent.id)}
+      >
+        <span className="conversation-peek-copy">
+          <strong>{agent.name}</strong>
+          <small>{update}</small>
+        </span>
+        <span className="conversation-peek-arrow" aria-hidden="true">↗</span>
+        <span className="conversation-peek-mark"><StatusMark status={agent.status} /></span>
+      </button>
+    );
+  };
+
+  return (
+    <aside
+      className={`conversation-peek ${expanded ? "is-expanded" : "is-compact"}`}
+      aria-label="Conversation updates"
+    >
+      <div className="conversation-peek-list">
+        {visibleAgents.map(agentButton)}
+        {navigationAgents.length > 0 ? (
+          <button
+            className="conversation-peek-more"
+            type="button"
+            onClick={onMore}
+            aria-label={hiddenCount > 0 ? `View ${hiddenCount} more updates` : "View all updates"}
+          >
+            <span className="conversation-peek-more-label">
+              {hiddenCount > 0 ? `+${hiddenCount} more updates` : "View all updates"}
+            </span>
+            <span className="conversation-peek-more-dots" aria-hidden="true">···</span>
+          </button>
+        ) : null}
+      </div>
+    </aside>
+  );
+}
+
 const runtimePlaceholder: Agent = {
   id: "runtime-placeholder",
   name: "Connecting to runtimes",
@@ -754,7 +872,7 @@ const runtimePlaceholder: Agent = {
 export function App({ demo = import.meta.env.MODE === "test" || new URLSearchParams(window.location.search).has("demo") }: { readonly demo?: boolean }) {
   const [agents, setAgents] = useState<readonly Agent[]>(demo ? initialAgents : []);
   const [selectedId, setSelectedId] = useState(demo ? "lead" : "");
-  const [drawer, setDrawer] = useState<Drawer | null>(demo ? "focus" : "fleet");
+  const [drawer, setDrawer] = useState<Drawer | null>(demo ? "focus" : null);
   const [focusMode, setFocusMode] = useState<FocusMode>("list");
   // The right spine won the anchor trial (ADR-0006); bottom is retired.
   const edge: Edge = "right";
@@ -765,6 +883,13 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   const [helpReturnDrawer, setHelpReturnDrawer] = useState<Drawer | null>(demo ? "focus" : "fleet");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [attentionFocusRequest, setAttentionFocusRequest] = useState(0);
+  const [peekFocusRequest, setPeekFocusRequest] = useState(0);
+  const [peekExpanded, setPeekExpanded] = useState(true);
+  const peekHovered = useRef(false);
+  const nativeHoverElement = useRef<HTMLElement | null>(null);
+  const [nativeHoverAgentId, setNativeHoverAgentId] = useState<string>();
+  const [windowFocused, setWindowFocused] = useState(true);
+  const [acknowledgedDone, setAcknowledgedDone] = useState<Readonly<Record<string, number>>>({});
   const [connection, setConnection] = useState<RuntimeConnection>(demo ? "demo" : "connecting");
   const [actionError, setActionError] = useState<string>();
 
@@ -775,11 +900,37 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   );
   const selectedChildren = useMemo(() => agents.filter((agent) => agent.parentId === selected.id), [agents, selected]);
   const attentionAgents = useMemo(() => {
-    const attention = agents.filter(needsAttention);
+    const attention = agents.filter((agent) => !isDoneAcknowledged(agent, acknowledgedDone) && needsAttention(agent));
     return demo
       ? attention.sort((a, b) => attentionPriority[a.status] - attentionPriority[b.status] || a.name.localeCompare(b.name))
       : attention;
-  }, [agents, demo]);
+  }, [agents, acknowledgedDone, demo]);
+  const workingPeekAgents = useMemo(
+    () => agents.filter((agent) => agent.status === "working" && !needsAttention(agent)),
+    [agents],
+  );
+  const donePeekAgents = useMemo(
+    () => agents.filter((agent) => agent.status === "done" && !isDoneAcknowledged(agent, acknowledgedDone) && !needsAttention(agent)),
+    [agents, acknowledgedDone],
+  );
+  const conversationPeekAgents = useMemo(
+    () => [...attentionAgents, ...donePeekAgents, ...workingPeekAgents],
+    [attentionAgents, donePeekAgents, workingPeekAgents],
+  );
+  const conversationPeekPreviewAgents = useMemo(() => {
+    const attention = attentionAgents.slice(0, 3);
+    const done = donePeekAgents.slice(0, 2);
+    const workingSlots = Math.max(0, 5 - attention.length - done.length);
+    return [...attention, ...done, ...workingPeekAgents.slice(0, workingSlots)];
+  }, [attentionAgents, donePeekAgents, workingPeekAgents]);
+  const [peekActiveId, setPeekActiveId] = useState("");
+  const conversationPeekVisible = drawer === null && conversationPeekAgents.length > 0;
+
+  useEffect(() => {
+    if (!conversationPeekAgents.some((agent) => agent.id === peekActiveId)) {
+      setPeekActiveId(conversationPeekAgents[0]?.id ?? "");
+    }
+  }, [conversationPeekAgents, peekActiveId]);
 
   useEffect(() => {
     if (demo) return;
@@ -833,15 +984,24 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   // The native window is the source of truth for when a geometry change has
   // actually landed: the web renders the committed geometry so it never
   // paints a layout the window cannot show yet (the switch/close flicker).
-  const [rendered, setRendered] = useState<HudGeometry>({ drawer: demo ? "focus" : "fleet", edge: "right", mode: "list" });
+  const [rendered, setRendered] = useState<HudGeometry>({ drawer: demo ? "focus" : null, edge: "right", mode: "list" });
   const geometryTarget = { drawer, edge, mode: focusMode };
   const geometryTargetRef = useRef(geometryTarget);
   geometryTargetRef.current = geometryTarget;
+  // A terminal opened from the compact rail must wait for the native stage to
+  // acknowledge its full drawer size. Otherwise xterm measures the clipped
+  // rail and opens the remote session at a tiny column count.
+  const replyReady = replyOpen && rendered.drawer === drawer;
 
   // Post before paint: the native window should move in step with the first
   // frame of the new web layout, not one frame after it.
   useLayoutEffect(() => {
-    shellMessage("resize", { ...panelSize(drawer, edge, focusMode), edge, drawer: drawerSize(drawer, edge, focusMode) });
+    shellMessage("resize", {
+      ...panelSize(drawer, edge, focusMode, conversationPeekVisible),
+      edge,
+      drawer: drawerSize(drawer, edge, focusMode),
+      conversationRail: conversationPeekVisible,
+    });
     if (!hasBridge) {
       setRendered(geometryTargetRef.current);
       return;
@@ -852,39 +1012,127 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       shellMessage("commit", {});
     }, 150);
     return () => window.clearTimeout(fallback);
-  }, [drawer, edge, focusMode]);
+  }, [drawer, edge, focusMode, conversationPeekVisible]);
   // Phase 2: once the committed layout is in the DOM (pre-paint), ack so the
   // shell moves the vibrancy glass together with the new content.
   useLayoutEffect(() => {
     if (hasBridge) shellMessage("commit", {});
   }, [rendered.drawer, rendered.edge, rendered.mode]);
   useEffect(() => {
-    const commit = () => setRendered({ ...geometryTargetRef.current });
+    const commit = () => {
+      setRendered({ ...geometryTargetRef.current });
+    };
     window.addEventListener("heed:resized", commit);
     return () => window.removeEventListener("heed:resized", commit);
   }, []);
   useEffect(() => {
-    const showAttention = () => {
+    const showRail = () => {
       setPaletteOpen(false);
       setReplyOpen(false);
       setEvidence(null);
-      setFleetFilter("attention");
-      setDrawer("fleet");
-      setAttentionFocusRequest((request) => request + 1);
+      setWindowFocused(true);
+      returnToUpdateRail();
     };
     const prepareHidden = () => {
       setPaletteOpen(false);
       setReplyOpen(false);
-      setFleetFilter("attention");
-      setDrawer("fleet");
+      setDrawer(null);
+      setWindowFocused(false);
+      setPeekFocusState(false);
     };
-    window.addEventListener("heed:shown", showAttention);
+    window.addEventListener("heed:shown", showRail);
     window.addEventListener("heed:hidden", prepareHidden);
     return () => {
-      window.removeEventListener("heed:shown", showAttention);
+      window.removeEventListener("heed:shown", showRail);
       window.removeEventListener("heed:hidden", prepareHidden);
     };
+  }, [conversationPeekAgents]);
+
+  useEffect(() => {
+    const expandPeek = () => {
+      setWindowFocused(true);
+      setPeekFocusState(true);
+    };
+    const compactPeek = () => {
+      setWindowFocused(false);
+      if (!peekHovered.current) setPeekFocusState(false);
+    };
+    window.addEventListener("focus", expandPeek);
+    window.addEventListener("blur", compactPeek);
+    return () => {
+      window.removeEventListener("focus", expandPeek);
+      window.removeEventListener("blur", compactPeek);
+    };
   }, []);
+
+  useEffect(() => {
+    window.addEventListener("heed:rail-hover", handleNativeRailEnter);
+    window.addEventListener("heed:rail-hover-end", handleNativeRailLeave);
+    return () => {
+      window.removeEventListener("heed:rail-hover", handleNativeRailEnter);
+      window.removeEventListener("heed:rail-hover-end", handleNativeRailLeave);
+    };
+  }, [drawer, conversationPeekAgents, windowFocused]);
+
+  useEffect(() => {
+    const clearNativeHover = () => {
+      nativeHoverElement.current?.classList.remove("is-native-hover");
+      nativeHoverElement.current = null;
+      setNativeHoverAgentId(undefined);
+    };
+    const handleNativePointer = (event: Event) => {
+      const detail = (event as CustomEvent<NativePointerDetail>).detail;
+      if (!detail) return;
+      const target = nativeInteractiveTarget(detail);
+      if (target === nativeHoverElement.current) return;
+      nativeHoverElement.current?.classList.remove("is-native-hover");
+      nativeHoverElement.current = target;
+      target?.classList.add("is-native-hover");
+      const id = target?.dataset.agentId;
+      if (id && conversationPeekAgents.some((agent) => agent.id === id)) {
+        setNativeHoverAgentId(id);
+        setPeekActiveId(id);
+      } else {
+        setNativeHoverAgentId(undefined);
+      }
+    };
+    const handleNativeClick = (event: Event) => {
+      const detail = (event as CustomEvent<NativePointerDetail>).detail;
+      if (!detail) return;
+      const target = nativeInteractiveTarget(detail);
+      if (target instanceof HTMLButtonElement) target.click();
+    };
+    window.addEventListener("heed:rail-pointer", handleNativePointer);
+    window.addEventListener("heed:rail-click", handleNativeClick);
+    window.addEventListener("heed:rail-hover-end", clearNativeHover);
+    return () => {
+      window.removeEventListener("heed:rail-pointer", handleNativePointer);
+      window.removeEventListener("heed:rail-click", handleNativeClick);
+      window.removeEventListener("heed:rail-hover-end", clearNativeHover);
+      clearNativeHover();
+    };
+  }, [conversationPeekAgents]);
+
+  function handleNativeRailEnter() {
+    if (drawer !== null || conversationPeekAgents.length === 0) return;
+    peekHovered.current = true;
+    setPeekFocusState(true);
+  }
+
+  function handleNativeRailLeave() {
+    peekHovered.current = false;
+    if (!windowFocused) setPeekFocusState(false);
+  }
+
+  function handleHudMouseEnter() {
+    if (hasBridge) return;
+    handleNativeRailEnter();
+  }
+
+  function handleHudMouseLeave() {
+    if (hasBridge) return;
+    handleNativeRailLeave();
+  }
 
   useEffect(() => {
     const toggleMainSurface = () => {
@@ -903,13 +1151,46 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
     return () => window.removeEventListener("heed:toggle-main", toggleMainSurface);
   }, [drawer, paletteOpen, replyOpen]);
 
+  useEffect(() => {
+    const focusUpdateRail = () => {
+      returnToUpdateRail();
+    };
+    window.addEventListener("heed:focus-list", focusUpdateRail);
+    return () => window.removeEventListener("heed:focus-list", focusUpdateRail);
+  }, [conversationPeekAgents]);
+
+  function returnToUpdateRail(focusId?: string) {
+    setPaletteOpen(false);
+    setReplyOpen(false);
+    setEvidence(null);
+    setActionError(undefined);
+    setDrawer(null);
+    setPeekFocusState(true);
+    setPeekActiveId(
+      focusId && conversationPeekAgents.some((agent) => agent.id === focusId)
+        ? focusId
+        : conversationPeekAgents[0]?.id ?? "",
+    );
+    setPeekFocusRequest((request) => request + 1);
+  }
+
+  function setPeekFocusState(expanded: boolean) {
+    setPeekExpanded(expanded);
+  }
+
+  function acknowledgeDone(id: string) {
+    const agent = agents.find((candidate) => candidate.id === id);
+    if (!agent || agent.status !== "done") return;
+    const revision = doneRevision(agent);
+    setAcknowledgedDone((current) => current[id] === revision ? current : { ...current, [id]: revision });
+  }
+
   function closeCurrentSurface() {
     if (paletteOpen) setPaletteOpen(false);
-    else if (replyOpen) setReplyOpen(false);
+    else if (replyOpen) returnToUpdateRail(selected.id);
     else if (drawer === "help") setDrawer(helpReturnDrawer);
     else if (drawer === "diff") setDrawer(returnDrawer);
-    else if (drawer === "focus") openFleet("attention");
-    else if (drawer === "fleet") setDrawer(null);
+    else if (drawer === "focus" || drawer === "fleet") returnToUpdateRail(selected.id);
   }
 
   useEffect(() => {
@@ -932,6 +1213,13 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
         return;
       }
 
+      if (event.key === "Escape" && replyOpen && !target?.closest?.(".terminal-frame")) {
+        event.preventDefault();
+        event.stopPropagation();
+        returnToUpdateRail(selected.id);
+        return;
+      }
+
       // Everything else belongs to xterm while the terminal has focus.
       if (target?.closest?.(".terminal-frame")) return;
       const editable = target?.closest?.("input, textarea, select, [contenteditable]");
@@ -943,6 +1231,32 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       }
       // Fleet owns its complete keyboard model locally.
       if (target?.closest?.(".fleet-drawer")) return;
+      if (drawer === null && !replyOpen && !paletteOpen && !command && !event.altKey && !editable && event.key === "Enter" && peekActiveId) {
+        event.preventDefault();
+        event.stopPropagation();
+        openPeekConversation(peekActiveId);
+        return;
+      }
+      if (drawer === null && !replyOpen && !paletteOpen && !command && !event.altKey && !editable && key === "f") {
+        event.preventDefault();
+        event.stopPropagation();
+        openFleet("all");
+        return;
+      }
+      if (drawer === null && !replyOpen && !paletteOpen && !command && !editable && conversationPeekAgents.length > 0) {
+        if (event.key === "ArrowDown" || key === "j") {
+          event.preventDefault();
+          event.stopPropagation();
+          movePeekSelection(1);
+          return;
+        }
+        if (event.key === "ArrowUp" || key === "k") {
+          event.preventDefault();
+          event.stopPropagation();
+          movePeekSelection(-1);
+          return;
+        }
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         closeCurrentSurface();
@@ -966,9 +1280,11 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("heed:back", onNativeBack);
     };
-  }, [paletteOpen, replyOpen, drawer, returnDrawer, helpReturnDrawer, demo, selected.runtime]);
+  }, [paletteOpen, replyOpen, drawer, returnDrawer, helpReturnDrawer, demo, selected.runtime, conversationPeekAgents, peekActiveId]);
 
   function selectAgent(id: string) {
+    acknowledgeDone(id);
+    if (conversationPeekAgents.some((agent) => agent.id === id)) setPeekActiveId(id);
     setSelectedId(id);
     setEvidence(null);
     setReplyOpen(false);
@@ -983,8 +1299,32 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function toggleFocusDrawer() {
+    if (drawer === "focus") {
+      returnToUpdateRail();
+      return;
+    }
     setReplyOpen(false);
-    setDrawer((current) => (current === "focus" ? null : "focus"));
+    setDrawer("focus");
+  }
+
+  function movePeekSelection(step: number) {
+    if (conversationPeekAgents.length === 0) return;
+    setPeekActiveId((current) => {
+      const index = conversationPeekAgents.findIndex((agent) => agent.id === current);
+      return conversationPeekAgents[(Math.max(0, index) + step + conversationPeekAgents.length) % conversationPeekAgents.length]!.id;
+    });
+  }
+
+  function activatePeek(id: string) {
+    setPeekFocusState(true);
+    setPeekActiveId(id);
+  }
+
+  function openPeekConversation(id: string) {
+    if (!agents.some((agent) => agent.id === id)) return;
+    setPeekActiveId(id);
+    setDrawer("focus");
+    openTerminal(id);
   }
 
   function toggleKeyboardHelp() {
@@ -1001,6 +1341,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   function openTerminal(id: string) {
     const agent = agents.find((candidate) => candidate.id === id);
     if (!agent) return;
+    acknowledgeDone(id);
     setSelectedId(id);
     setEvidence(null);
     if (demo || agent.runtime?.capabilities.terminal) setReplyOpen(true);
@@ -1010,6 +1351,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   async function openChangesFor(id: string) {
     const agent = agents.find((candidate) => candidate.id === id);
     if (!agent) return;
+    acknowledgeDone(id);
     setActionError(undefined);
     setSelectedId(id);
     setReturnDrawer(drawer === "fleet" ? "fleet" : "focus");
@@ -1062,7 +1404,29 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
 
   return (
     <main className="hud-root">
-      <div className="hud" data-edge={rendered.edge} data-mode={rendered.mode}>
+      <div
+        className="hud"
+        data-edge={rendered.edge}
+        data-mode={rendered.mode}
+        data-drawer={rendered.drawer ?? "rail"}
+        onMouseEnter={handleHudMouseEnter}
+        onPointerEnter={handleHudMouseEnter}
+        onPointerMove={handleHudMouseEnter}
+        onMouseLeave={handleHudMouseLeave}
+      >
+        {rendered.drawer === null && conversationPeekAgents.length > 0 ? (
+          <ConversationPeek
+            agents={conversationPeekPreviewAgents}
+            navigationAgents={conversationPeekAgents}
+            activeId={peekActiveId}
+              nativeHoverId={nativeHoverAgentId}
+              focusRequest={peekFocusRequest}
+              expanded={peekExpanded}
+            onActive={activatePeek}
+            onSelect={openPeekConversation}
+            onMore={() => openFleet("all")}
+          />
+        ) : null}
         {/* No exit animations on drawers: the window and web layout change in
             the same frame, so nothing lingers to flicker at the old size. */}
         {rendered.drawer === "focus" ? (
@@ -1138,17 +1502,17 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
               onTerminal={demo || selected.runtime?.capabilities.terminal ? () => openTerminal(selected.id) : undefined}
             />
           ) : null}
-          {rendered.drawer === "help" ? (
-            <KeyboardHelp onClose={() => setDrawer(helpReturnDrawer)} />
-          ) : null}
+        {rendered.drawer === "help" ? (
+          <KeyboardHelp onClose={() => setDrawer(helpReturnDrawer)} />
+        ) : null}
         <AnimatePresence>
-          {replyOpen ? (
-            <TerminalCard
-              key="reply"
-              agent={selected}
-              messages={selected.messages}
-              onClose={() => setReplyOpen(false)}
-              actionError={actionError}
+          {replyReady ? (
+              <TerminalCard
+                key="reply"
+                agent={selected}
+                messages={selected.messages}
+                onClose={() => returnToUpdateRail(selected.id)}
+                actionError={actionError}
             />
           ) : null}
         </AnimatePresence>
@@ -1172,6 +1536,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
           onTriage={() => openFleet("attention")}
           onFleet={() => openFleet("all")}
           onHelp={toggleKeyboardHelp}
+          onHover={handleHudMouseEnter}
           connection={connection}
         />
       </div>

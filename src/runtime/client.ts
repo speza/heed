@@ -59,5 +59,3 @@ export function parseTerminalMessage(value: string): RuntimeTerminalMessage {
   if (!parsed || !["frame", "closed", "error"].includes(parsed.kind)) throw new Error("Invalid terminal message.");
   return parsed;
 }
-
-
