@@ -26,7 +26,6 @@ export interface RuntimeAdapter {
   snapshot(): Promise<RuntimeAdapterSnapshot>;
   readOutput?(id: string, request: RuntimeOutputRequest): Promise<RuntimeOutput>;
   readChanges?(id: string): Promise<RuntimeChanges>;
-  markViewed?(id: string): Promise<void>;
   openTerminal?(id: string, dimensions: RuntimeTerminalDimensions): Promise<RuntimeTerminalSession>;
   releaseTerminal?(sessionId: string): Promise<void>;
 }
@@ -83,12 +82,6 @@ export class RuntimeGateway {
     const { adapter } = await this.resolve(id);
     if (!adapter.readChanges) throw new RuntimeAdapterError(409, `${adapter.source.label} does not expose workspace changes.`);
     return adapter.readChanges(id);
-  }
-
-  async markViewed(id: string): Promise<void> {
-    const { adapter } = await this.resolve(id);
-    if (!adapter.markViewed) throw new RuntimeAdapterError(409, `${adapter.source.label} does not expose viewed state.`);
-    await adapter.markViewed(id);
   }
 
   async openTerminal(id: string, dimensions: RuntimeTerminalDimensions): Promise<RuntimeTerminalSession> {
@@ -157,12 +150,6 @@ export async function handleRuntimeRequest(request: Request, gateway: RuntimeGat
         if (error instanceof RuntimeAdapterError) throw error;
         throw new RuntimeAdapterError(409, error instanceof Error ? error.message : "Terminal session could not be opened.");
       }
-    }
-
-    const agentView = /^\/api\/runtime\/agents\/([^/]+)\/view$/u.exec(url.pathname);
-    if (request.method === "POST" && agentView?.[1]) {
-      await gateway.markViewed(decodeURIComponent(agentView[1]));
-      return json({ ok: true });
     }
 
     const match = /^\/api\/runtime\/agents\/([^/]+)\/(output|changes)$/u.exec(url.pathname);

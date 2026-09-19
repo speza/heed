@@ -304,12 +304,9 @@ describe("summoned hud", () => {
     terminalInput.className = "terminal-frame";
     terminal.append(terminalInput);
     fireEvent.keyDown(terminalInput, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByLabelText("Terminal for Synthesis lead")).not.toBeInTheDocument());
-    expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Terminal for Synthesis lead")).toBeInTheDocument();
 
     // Command-W is also handled before the terminal guard when the terminal is open.
-    fireEvent.keyDown(window, { key: "Enter" });
-    expect(screen.getByLabelText("Terminal for Synthesis lead")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "w", metaKey: true });
     await waitFor(() => expect(screen.queryByLabelText("Terminal for Synthesis lead")).not.toBeInTheDocument());
     expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();

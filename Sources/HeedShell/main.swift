@@ -105,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
       // the collapsed rail keyboard-active after toggling the web surface.
       focusPanel()
       webView.evaluateJavaScript(
-        "window.dispatchEvent(new CustomEvent('heed:focus-list'))",
+        "window.dispatchEvent(new CustomEvent('heed:toggle-main'))",
         completionHandler: nil
       )
     } else {
@@ -140,6 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
       } else {
         drawerSize = nil
         hasConversationRail = payload["conversationRail"] as? Bool ?? false
+        if !hasConversationRail {
+          pointerInsidePanel = false
+          panel.ignoresMouseEvents = false
+        }
         // Collapse immediately: an out-of-date effect frame can otherwise
         // protrude beside the narrow sidebar until the web commit arrives.
         drawerEffect.isHidden = true

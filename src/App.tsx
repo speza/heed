@@ -3,7 +3,7 @@ import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { initialAgents } from "./fixtures";
 import { DiffDrawer } from "./DiffDrawer";
 import { TerminalOutput } from "./TerminalOutput";
-import { fetchAgentChanges, fetchRuntime, markAgentViewed } from "./runtime/client";
+import { fetchAgentChanges, fetchRuntime } from "./runtime/client";
 import { runtimeAgent } from "./runtime/map";
 import type { RuntimeConnection } from "./runtime/types";
 import type { Agent, AgentStatus, ChatMessage } from "./types";
@@ -396,8 +396,8 @@ function TerminalCard({
       <header className="reply-head">
         <StatusMark status={agent.status} />
         <strong>{agent.name}</strong>
-        <span className="terminal-back-hint">Back to update rail <kbd>Esc</kbd> <kbd>⌘W</kbd></span>
-        <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to update rail (Escape or Command-W)" type="button"><Glyph name="close" /></button>
+        <span className="terminal-back-hint">Back to update rail <kbd>⌘W</kbd></span>
+        <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to update rail (Command-W)" type="button"><Glyph name="close" /></button>
       </header>
       <div className="reply-log">
         {messages.length === 0 && !agent.runtime ? <EmptyState>Nothing yet. Say what you need.</EmptyState> : null}
@@ -698,7 +698,7 @@ function KeyboardHelp({ onClose }: { readonly onClose: () => void }) {
   const groups = [
     { title: "Global", shortcuts: [["⌥Space", "Focus update rail"], ["F", "Open full session list"], ["↑ ↓ / J K", "Cycle focused updates"], ["Enter", "Open selected update"], ["?", "Keyboard shortcuts"], ["⌘K", "Command palette"], ["Sidebar ×", "Hide Heed"]] },
     { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Navigate"], ["↵ / T", "Open terminal"], ["D", "Workspace changes"], ["/", "Search"], ["A", "Attention / all"], ["Esc", "Collapse to sidebar"]] },
-    { title: "Terminal", shortcuts: [["Esc / ⌘W", "Back to update rail"], ["Wheel / PgUp PgDn", "Scroll"]] },
+    { title: "Terminal", shortcuts: [["Esc", "Terminal input"], ["⌘W", "Back to update rail"], ["Wheel / PgUp PgDn", "Scroll"]] },
   ] as const;
 
   return (
@@ -1182,11 +1182,6 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
     if (!agent || agent.status !== "done") return;
     const revision = doneRevision(agent);
     setAcknowledgedDone((current) => current[id] === revision ? current : { ...current, [id]: revision });
-    if (agent.runtime?.sourceKind === "herdr") {
-      // Herdr only clears its Done state after an explicit focus command.
-      // Keep the local rail responsive while the runtime records the view.
-      void markAgentViewed(id).catch(() => undefined);
-    }
   }
 
   function closeCurrentSurface() {
@@ -1217,7 +1212,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
         return;
       }
 
-      if (event.key === "Escape" && replyOpen) {
+      if (event.key === "Escape" && replyOpen && !target?.closest?.(".terminal-frame")) {
         event.preventDefault();
         event.stopPropagation();
         returnToUpdateRail(selected.id);
@@ -1258,12 +1253,6 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
           event.preventDefault();
           event.stopPropagation();
           movePeekSelection(-1);
-          return;
-        }
-        if (event.key === "Enter") {
-          event.preventDefault();
-          event.stopPropagation();
-          if (peekActiveId) openPeekConversation(peekActiveId);
           return;
         }
       }

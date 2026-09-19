@@ -322,14 +322,6 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
     return workspaceChanges(await this.targetAgent(id));
   }
 
-  async markViewed(id: string): Promise<void> {
-    const agent = await this.targetAgent(id);
-    const paneId = agent.location?.paneId;
-    if (!paneId) throw new RuntimeAdapterError(404, "Herdr did not report a pane for this agent.");
-    const result = await command(["herdr", "agent", "focus", paneId]);
-    if (result.exitCode !== 0) throw new RuntimeAdapterError(502, commandError(result, "Herdr could not mark the agent viewed."));
-  }
-
   async openTerminal(id: string, dimensions: RuntimeTerminalDimensions) {
     const agent = await this.targetAgent(id);
     const paneId = agent.location?.paneId;

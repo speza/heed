@@ -60,23 +60,6 @@ describe("runtime gateway", () => {
     expect(snapshot.sources).toEqual([live, offline]);
   });
 
-  test("marks a viewed agent through the owning runtime", async () => {
-    const source: RuntimeSource = { id: "herdr-local", kind: "herdr", label: "Herdr" };
-    let viewedId: string | undefined;
-    const gateway = new RuntimeGateway([{
-      ...adapter(source, { available: true, agents: [agent(source, "herdr-local:done")] }),
-      markViewed: async (id) => { viewedId = id; },
-    }]);
-
-    const response = await handleRuntimeRequest(
-      new Request("http://127.0.0.1/api/runtime/agents/herdr-local%3Adone/view", { method: "POST" }),
-      gateway,
-    );
-
-    expect(response?.status).toBe(200);
-    expect(viewedId).toBe("herdr-local:done");
-  });
-
   test("returns a capability error when a source has no terminal", async () => {
     const adapterInstance = new MockApiRuntimeAdapter();
     const gateway = new RuntimeGateway([adapterInstance]);
