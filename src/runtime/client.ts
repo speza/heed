@@ -30,6 +30,15 @@ export async function fetchAgentChanges(id: string, signal?: AbortSignal): Promi
   );
 }
 
+export async function markAgentViewed(id: string): Promise<void> {
+  await responseJson(
+    await fetch(`/api/runtime/agents/${encodeURIComponent(id)}/view`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+    }),
+  );
+}
+
 export async function openAgentTerminal(id: string, columns: number, rows: number): Promise<RuntimeTerminalSession> {
   return responseJson(
     await fetch(`/api/runtime/agents/${encodeURIComponent(id)}/terminal`, {
@@ -59,5 +68,4 @@ export function parseTerminalMessage(value: string): RuntimeTerminalMessage {
   if (!parsed || !["frame", "closed", "error"].includes(parsed.kind)) throw new Error("Invalid terminal message.");
   return parsed;
 }
-
 

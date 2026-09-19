@@ -24,8 +24,22 @@ private func hotKeyEventHandler(
 }
 
 final class FloatingPanel: NSPanel {
+  var onInactiveMouseDown: ((NSEvent) -> Void)?
+  var onMouseMoved: ((NSPoint) -> Void)?
+
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
+
+  override func sendEvent(_ event: NSEvent) {
+    if event.type == .mouseMoved {
+      onMouseMoved?(convertPoint(toScreen: event.locationInWindow))
+    }
+    if event.type == .leftMouseDown, !isKeyWindow {
+      onInactiveMouseDown?(event)
+      return
+    }
+    super.sendEvent(event)
+  }
 
   // NSPanel treats Escape as cancelOperation by default. The web terminal owns
   // Escape, and Heed is dismissed explicitly with Option+Space or its close UI.
@@ -40,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   private var hotKeyRef: EventHotKeyRef?
   private var hotKeyHandlerRef: EventHandlerRef?
   private var localCommandMonitor: Any?
+  private var globalMouseMonitor: Any?
+  private var pointerInsidePanel = false
+  private var hasConversationRail = false
   private var currentEdge = "right"
   private var drawerSize: CGSize?
 
@@ -61,16 +78,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     if let localCommandMonitor {
       NSEvent.removeMonitor(localCommandMonitor)
     }
+    if let globalMouseMonitor {
+      NSEvent.removeMonitor(globalMouseMonitor)
+    }
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
     false
   }
 
+  func applicationDidBecomeActive(_: Notification) {
+    panel?.ignoresMouseEvents = false
+  }
+
+  func applicationDidResignActive(_: Notification) {
+    guard panel != nil, hasConversationRail, drawerSize == nil else { return }
+    updateRailPointer(at: NSEvent.mouseLocation)
+    if !pointerInsidePanel {
+      panel.ignoresMouseEvents = true
+    }
+  }
+
   func togglePanel() {
     if panel.isVisible {
+      // The global shortcut can arrive while another app owns key focus. Keep
+      // the collapsed rail keyboard-active after toggling the web surface.
+      focusPanel()
       webView.evaluateJavaScript(
-        "window.dispatchEvent(new CustomEvent('heed:toggle-main'))",
+        "window.dispatchEvent(new CustomEvent('heed:focus-list'))",
         completionHandler: nil
       )
     } else {
@@ -99,13 +134,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let drawerHeight = drawer["height"] as? Double
       {
         drawerSize = CGSize(width: drawerWidth, height: drawerHeight)
+        hasConversationRail = false
+        pointerInsidePanel = false
+        panel.ignoresMouseEvents = false
       } else {
         drawerSize = nil
+        hasConversationRail = payload["conversationRail"] as? Bool ?? false
         // Collapse immediately: an out-of-date effect frame can otherwise
         // protrude beside the narrow sidebar until the web commit arrives.
         drawerEffect.isHidden = true
       }
       resizePanel(width: width, height: height, edge: currentEdge)
+      if hasConversationRail, !NSApp.isActive, !pointerInsidePanel {
+        panel.ignoresMouseEvents = true
+      }
       // Confirm so the web swaps its layout only once the window can show it.
       webView.evaluateJavaScript(
         "window.dispatchEvent(new CustomEvent('heed:resized'))",
@@ -133,9 +175,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     panel.hasShadow = false
     panel.level = .floating
     panel.hidesOnDeactivate = false
-    panel.isMovableByWindowBackground = true
+    // FloatingPanel owns movement delivered to Heed; the global monitor below
+    // observes the click-through rail while another application is active.
+    panel.acceptsMouseMovedEvents = true
+    // The rail is an interactive control surface, not a title bar. Inactive
+    // clicks are forwarded to WebKit before the panel is activated.
+    panel.isMovableByWindowBackground = false
     panel.animationBehavior = .utilityWindow
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+    panel.onInactiveMouseDown = { [weak self] _ in
+      guard let self else { return }
+      self.sendRailClick(at: NSEvent.mouseLocation)
+      self.focusPanel()
+    }
+    panel.onMouseMoved = { [weak self] screenPoint in
+      self?.updateRailPointer(at: screenPoint)
+    }
 
     // The window is a transparent stage. Vibrancy lives in shaped surfaces
     // sized to the web content, so the glass never bleeds past what is drawn.
@@ -164,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     layoutDrawerSurface()
 
     loadWebExperience()
+    registerGlobalMouseTracking()
   }
 
   private func makeEffectView(cornerRadius: CGFloat) -> NSVisualEffectView {
@@ -246,6 +302,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
   }
 
+  // WebKit hover is unreliable before the panel's first click. AppKit is the
+  // shell's single hover authority: FloatingPanel handles movement delivered
+  // to Heed and this global monitor handles the click-through inactive rail.
+  // This bridge mirrors interaction only: while another app is active, macOS
+  // keeps ownership of the displayed system cursor with that app.
+  private func registerGlobalMouseTracking() {
+    globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+      guard let self else { return }
+      let screenPoint = NSEvent.mouseLocation
+      DispatchQueue.main.async { [weak self] in
+        self?.updateRailPointer(at: screenPoint)
+      }
+    }
+  }
+
+  private func updateRailPointer(at screenPoint: NSPoint) {
+    guard panel.isVisible, hasConversationRail, drawerSize == nil else { return }
+    let hitFrame: NSRect
+    if pointerInsidePanel {
+      hitFrame = panel.frame
+    } else {
+      hitFrame = NSRect(
+        x: panel.frame.maxX - 96,
+        y: panel.frame.minY,
+        width: 96,
+        height: panel.frame.height
+      )
+    }
+    let inside = hitFrame.contains(screenPoint)
+    guard inside else {
+      if pointerInsidePanel { setRailHover(false) }
+      return
+    }
+    if !pointerInsidePanel { setRailHover(true) }
+    sendRailPointer(at: screenPoint)
+  }
+
+  private func setRailHover(_ hovered: Bool) {
+    guard hovered != pointerInsidePanel else { return }
+    pointerInsidePanel = hovered
+    panel.ignoresMouseEvents = !hovered && !NSApp.isActive
+    let eventName = hovered ? "heed:rail-hover" : "heed:rail-hover-end"
+    webView.evaluateJavaScript(
+      "window.dispatchEvent(new CustomEvent('\(eventName)'))",
+      completionHandler: nil
+    )
+  }
+
+  private func sendRailPointer(at screenPoint: NSPoint) {
+    guard let (x, y) = webPoint(for: screenPoint) else { return }
+    webView.evaluateJavaScript(
+      "window.dispatchEvent(new CustomEvent('heed:rail-pointer', { detail: { x: \(x), y: \(y) } }))",
+      completionHandler: nil
+    )
+  }
+
+  private func sendRailClick(at screenPoint: NSPoint) {
+    guard let (x, y) = webPoint(for: screenPoint) else { return }
+    webView.evaluateJavaScript(
+      "window.dispatchEvent(new CustomEvent('heed:rail-click', { detail: { x: \(x), y: \(y) } }))",
+      completionHandler: nil
+    )
+  }
+
+  private func webPoint(for screenPoint: NSPoint) -> (CGFloat, CGFloat)? {
+    let windowPoint = panel.convertPoint(fromScreen: screenPoint)
+    let viewPoint = webView.convert(windowPoint, from: nil)
+    let x = viewPoint.x
+    let y = webView.isFlipped ? viewPoint.y : webView.bounds.height - viewPoint.y
+    guard x >= 0, y >= 0, x <= webView.bounds.width, y <= webView.bounds.height else { return nil }
+    return (x, y)
+  }
+
   private func showPanel() {
     centrePanel()
     layoutBarSurface()
@@ -272,6 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   }
 
   private func focusPanel() {
+    panel.ignoresMouseEvents = false
     NSApp.activate(ignoringOtherApps: true)
     panel.orderFrontRegardless()
     panel.makeKey()
@@ -279,6 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   }
 
   private func hidePanel() {
+    pointerInsidePanel = false
     webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('heed:hidden'))")
     NSAnimationContext.runAnimationGroup(
       { context in
@@ -341,8 +472,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     } else {
       frame.origin.x -= (clampedWidth - oldWidth) / 2
     }
-    panel.setFrame(frame, display: true)
+    // Resize and reposition the right-anchored stage without drawing an
+    // intermediate frame. The vibrancy surface must move before WebKit and
+    // AppKit flush the newly sized window or the rail flashes to the left.
+    panel.setFrame(frame, display: false)
+    panel.contentView?.layoutSubtreeIfNeeded()
     layoutBarSurface()
+    panel.displayIfNeeded()
   }
 
   private func layoutBarSurface() {
