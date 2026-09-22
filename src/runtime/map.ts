@@ -40,6 +40,8 @@ export function runtimeAgent(agent: RuntimeAgent): Agent {
       sourceLabel: agent.source.label,
       sourceKind: agent.source.kind,
       capabilities: agent.capabilities,
+      ...(agent.sourceAvailable !== undefined ? { sourceAvailable: agent.sourceAvailable } : {}),
+      ...(agent.sourceStale !== undefined ? { sourceStale: agent.sourceStale } : {}),
       location,
       revision: agent.revision,
       interactiveReady: agent.interactiveReady,

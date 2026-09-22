@@ -58,6 +58,62 @@ describe("runtime gateway", () => {
     expect(snapshot.available).toBe(true);
     expect(snapshot.agents).toHaveLength(1);
     expect(snapshot.sources).toEqual([live, offline]);
+    expect(snapshot.sourceHealth).toEqual([
+      expect.objectContaining({ source: live, available: true, stale: false }),
+      expect.objectContaining({ source: offline, available: false, stale: false, error: "Connection refused" }),
+    ]);
+    expect(snapshot.error).toBe("Offline: Connection refused");
+  });
+
+  test("retains stale agents and disables their actions during a source outage", async () => {
+    const source: RuntimeSource = { id: "herdr-local", kind: "herdr", label: "Herdr" };
+    let available = true;
+    const runtime = agent(source, "herdr-local:one");
+    const gateway = new RuntimeGateway([{
+      source,
+      snapshot: async () => ({ available, agents: available ? [runtime] : [], fetchedAt: Date.now(), ...(available ? {} : { error: "Herdr stopped" }) }),
+    }]);
+
+    const live = await gateway.snapshot();
+    available = false;
+    const stale = await gateway.snapshot();
+
+    expect(live.agents).toHaveLength(1);
+    expect(stale.available).toBe(false);
+    expect(stale.agents).toHaveLength(1);
+    expect(stale.agents[0]).toMatchObject({ id: "herdr-local:one", sourceAvailable: false, sourceStale: true });
+    expect(stale.agents[0]?.capabilities).toEqual({
+      terminal: false,
+      output: false,
+      conversation: false,
+      workspaceChanges: false,
+      spawn: false,
+      lineage: false,
+    });
+    expect(stale.sourceHealth[0]).toMatchObject({ available: false, stale: true, error: "Herdr stopped" });
+  });
+
+  test("routes namespaced actions directly to their owning adapter", async () => {
+    const first: RuntimeSource = { id: "first", kind: "other", label: "First" };
+    const second: RuntimeSource = { id: "second", kind: "other", label: "Second" };
+    let firstSnapshots = 0;
+    let secondSnapshots = 0;
+    const gateway = new RuntimeGateway([
+      {
+        source: first,
+        snapshot: async () => { firstSnapshots += 1; return { available: true, agents: [agent(first, "first:one")], fetchedAt: Date.now() }; },
+        openTerminal: async () => ({ sessionId: "00000000-0000-0000-0000-000000000001", message: "opened" }),
+      },
+      {
+        source: second,
+        snapshot: async () => { secondSnapshots += 1; return { available: true, agents: [agent(second, "second:one")], fetchedAt: Date.now() }; },
+      },
+    ]);
+
+    await expect(gateway.openTerminal("first:one", { columns: 80, rows: 24 })).resolves.toMatchObject({ message: "opened" });
+
+    expect(firstSnapshots).toBe(0);
+    expect(secondSnapshots).toBe(0);
   });
 
   test("returns a capability error when a source has no terminal", async () => {
@@ -70,6 +126,20 @@ describe("runtime gateway", () => {
 
     expect(response?.status).toBe(409);
     await expect(response?.json()).resolves.toEqual({ error: "Mock API does not expose an interactive terminal." });
+  });
+
+  test("rejects oversized runtime request bodies before dispatch", async () => {
+    const gateway = new RuntimeGateway([new MockApiRuntimeAdapter()]);
+    const response = await handleRuntimeRequest(
+      new Request("http://127.0.0.1/api/runtime/agents/mock-api%3Aresearch/terminal", {
+        method: "POST",
+        body: JSON.stringify({ columns: 80, rows: 24, padding: "x".repeat(70_000) }),
+      }),
+      gateway,
+    );
+
+    expect(response?.status).toBe(413);
+    await expect(response?.json()).resolves.toEqual({ error: "Runtime request body is too large." });
   });
 
   test("rejects duplicate source identities", () => {

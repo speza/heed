@@ -29,6 +29,9 @@ bun install
 bun run dev
 ```
 
+Use Bun 1.4.2 or newer (the repository pins 1.4.2 in `.bun-version` because
+older Bun releases reject this lockfile format).
+
 Open the URL printed by Vite. Herdr must be running for live data. Add
 `?demo=1` to use the synthetic fixture fleet instead. To exercise a mixed fleet
 locally, opt into the synthetic non-terminal adapter:

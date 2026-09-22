@@ -6,12 +6,22 @@ import { handleRuntimeRequest } from "./runtime-gateway.ts";
 import { terminalGateway } from "./terminal.ts";
 
 const runtimeGateway = createRuntimeGateway();
+const MAX_REQUEST_BODY_BYTES = 64 * 1024;
 
-async function bodyFor(request: IncomingMessage): Promise<Uint8Array | undefined> {
+class RequestBodyLimitError extends Error {}
+
+export async function bodyFor(request: IncomingMessage): Promise<Uint8Array | undefined> {
   if (request.method === "GET" || request.method === "HEAD") return undefined;
+  const declaredLength = Number(request.headers["content-length"] ?? "");
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BODY_BYTES) throw new RequestBodyLimitError();
   const chunks: Uint8Array[] = [];
-  for await (const chunk of request) chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
-  const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  let size = 0;
+  for await (const chunk of request) {
+    const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
+    size += bytes.byteLength;
+    if (size > MAX_REQUEST_BODY_BYTES) throw new RequestBodyLimitError();
+    chunks.push(bytes);
+  }
   const body = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
@@ -28,9 +38,26 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
     if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
     else if (value !== undefined) headers.set(name, value);
   }
-  const body = await bodyFor(request);
+  const requestUrl = new URL(`http://${request.headers.host ?? "127.0.0.1"}${request.url}`);
+  const origin = request.headers.origin;
+  if (origin && origin !== requestUrl.origin) {
+    response.statusCode = 403;
+    response.end("Request origin rejected.");
+    return true;
+  }
+  let body: Uint8Array | undefined;
+  try {
+    body = await bodyFor(request);
+  } catch (error) {
+    if (error instanceof RequestBodyLimitError) {
+      response.statusCode = 413;
+      response.end("Runtime request body is too large.");
+      return true;
+    }
+    throw error;
+  }
   const result = await handleRuntimeRequest(
-    new Request(`http://${request.headers.host ?? "127.0.0.1"}${request.url}`, {
+    new Request(requestUrl, {
       method: request.method,
       headers,
       body: body ? Buffer.from(body) : undefined,
@@ -75,7 +102,10 @@ export function runtimeGatewayPlugin(): Plugin {
             return;
           }
           webSocket.on("message", (message, binary) => {
-            if (!binary) void connection?.receive(message.toString());
+            if (!binary) {
+              const pending = connection?.receive(message.toString());
+              if (pending) void pending.catch(() => webSocket.close(1011, "Terminal input failed"));
+            }
           });
           webSocket.on("close", () => connection?.close());
         });

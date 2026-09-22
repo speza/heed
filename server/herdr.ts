@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { FileChange } from "../src/types.ts";
 import type { RuntimeAgent, RuntimeCapabilities, RuntimeChanges, RuntimeLocation, RuntimeSource } from "../src/runtime/types.ts";
@@ -9,9 +9,11 @@ import { terminalGateway } from "./terminal.ts";
 
 const COMMAND_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_BYTES = 2 * 1024 * 1024;
+const MAX_CHANGED_FILES = 64;
 const MAX_UNTRACKED_FILES = 40;
 const MAX_UNTRACKED_FILE_BYTES = 256_000;
 const MAX_SYNTAX_SOURCE_BYTES = 512_000;
+const MAX_SYNTAX_SOURCE_CONCURRENCY = 4;
 
 interface CommandResult {
   readonly exitCode: number;
@@ -195,35 +197,45 @@ async function readSnapshot(): Promise<NormalizedSnapshot> {
   }
 }
 
-function splitPatch(patch: string): string[] {
-  const starts: number[] = [];
-  const pattern = /^diff --git /gmu;
-  for (let match = pattern.exec(patch); match; match = pattern.exec(patch)) starts.push(match.index);
-  return starts.map((start, index) => patch.slice(start, starts[index + 1] ?? patch.length).trimEnd());
+export interface GitChangeMetadata {
+  readonly path: string;
+  readonly status: string;
+  readonly untracked?: boolean;
 }
 
-function patchPath(patch: string): string | undefined {
-  const added = /^\+\+\+ b\/(.+)$/mu.exec(patch)?.[1];
-  if (added) return added;
-  const deleted = /^--- a\/(.+)$/mu.exec(patch)?.[1];
-  return deleted;
+export function parseGitChangeMetadata(output: string): GitChangeMetadata[] {
+  const fields = output.split("\0");
+  const changes: GitChangeMetadata[] = [];
+  for (let index = 0; index + 1 < fields.length;) {
+    const rawStatus = fields[index++]!;
+    const path = fields[index++]!;
+    const status = rawStatus.split("\t", 1)[0] ?? rawStatus;
+    if (status && path) changes.push({ status, path });
+  }
+  return changes;
 }
 
-function patchChange(patch: string): FileChange | undefined {
-  const path = patchPath(patch);
-  if (!path) return undefined;
+function changeKind(status: string): FileChange["kind"] {
+  return status.startsWith("A") ? "added" : status.startsWith("D") ? "deleted" : "modified";
+}
+
+export function patchChange(metadata: GitChangeMetadata, patch: string): FileChange {
+  const { path } = metadata;
   const lines = patch.split("\n");
   const additions = lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
   const deletions = lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
   const binary = /^(Binary files|GIT binary patch)/mu.test(patch);
-  const kind: FileChange["kind"] = /^--- \/dev\/null$/mu.test(patch)
-    ? "added"
-    : /^\+\+\+ \/dev\/null$/mu.test(patch)
-      ? "deleted"
-      : "modified";
+  const kind = changeKind(metadata.status);
   const fileHeader = patch.search(/^--- /mu);
   const renderablePatch = fileHeader >= 0 ? patch.slice(fileHeader) : patch;
-  return { path, additions, deletions, kind, ...(binary ? { binary: true } : {}), hunks: [renderablePatch] };
+  return {
+    path,
+    additions,
+    deletions,
+    kind,
+    ...(binary ? { binary: true } : {}),
+    hunks: renderablePatch ? [renderablePatch] : [],
+  };
 }
 
 function syntaxSource(content: string): { readonly content: string } | undefined {
@@ -234,8 +246,11 @@ async function workingTreeSource(root: string, path: string): Promise<{ readonly
   const absolute = resolve(root, path);
   if (absolute !== root && !absolute.startsWith(`${root}${sep}`)) return undefined;
   try {
-    const metadata = await stat(absolute);
+    const metadata = await lstat(absolute);
+    if (metadata.isSymbolicLink()) return undefined;
     if (!metadata.isFile() || metadata.size > MAX_SYNTAX_SOURCE_BYTES) return undefined;
+    const [worktreeRoot, resolved] = await Promise.all([realpath(root), realpath(absolute)]);
+    if (resolved !== worktreeRoot && !resolved.startsWith(`${worktreeRoot}${sep}`)) return undefined;
     return syntaxSource(await readFile(absolute, "utf8"));
   } catch {
     return undefined;
@@ -257,44 +272,77 @@ async function addSyntaxSources(root: string, file: NonNullable<ReturnType<typeo
   return { ...file, ...(oldFile ? { oldFile } : {}), ...(newFile ? { newFile } : {}) };
 }
 
+async function addSyntaxSourcesBounded(
+  root: string,
+  files: readonly ReturnType<typeof patchChange>[],
+): Promise<readonly Awaited<ReturnType<typeof addSyntaxSources>>[]> {
+  const results: Array<Awaited<ReturnType<typeof addSyntaxSources>> | undefined> = Array.from({ length: files.length });
+  let nextIndex = 0;
+  const worker = async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= files.length) return;
+      results[index] = await addSyntaxSources(root, files[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(MAX_SYNTAX_SOURCE_CONCURRENCY, files.length) }, worker));
+  return results as readonly Awaited<ReturnType<typeof addSyntaxSources>>[];
+}
+
+async function filePatch(root: string, metadata: GitChangeMetadata): Promise<CommandResult> {
+  const args = metadata.untracked
+    ? ["git", "-C", root, "diff", "--no-ext-diff", "--no-index", "--binary", "--", "/dev/null", metadata.path]
+    : ["git", "-C", root, "diff", "--no-ext-diff", "--no-renames", "--binary", "HEAD", "--", metadata.path];
+  return command(args, { allowExitOne: metadata.untracked });
+}
+
+export async function workspaceChangesAt(root: string): Promise<RuntimeChanges> {
+  const trackedMetadata = await command(["git", "-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "-z", "--no-renames", "HEAD", "--"]);
+  if (trackedMetadata.exitCode !== 0 || trackedMetadata.truncated)
+    throw new RuntimeAdapterError(502, trackedMetadata.truncated ? "The workspace change list is too large." : commandError(trackedMetadata, "Git status failed."));
+
+  const untrackedResult = await command(["git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z"]);
+  if (untrackedResult.exitCode !== 0 || untrackedResult.truncated)
+    throw new RuntimeAdapterError(502, untrackedResult.truncated ? "The untracked file list is too large." : commandError(untrackedResult, "Git status failed."));
+
+  const tracked = parseGitChangeMetadata(trackedMetadata.stdout);
+  const untracked = untrackedResult.stdout.split("\0").filter(Boolean).map((path): GitChangeMetadata => ({ path, status: "A", untracked: true }));
+  const candidateMetadata = [...tracked, ...untracked.slice(0, MAX_UNTRACKED_FILES)];
+  let partial = untracked.length > MAX_UNTRACKED_FILES || candidateMetadata.length > MAX_CHANGED_FILES;
+  const metadata = candidateMetadata.slice(0, MAX_CHANGED_FILES);
+  const parsedFiles: FileChange[] = [];
+  for (const entry of metadata) {
+    if (entry.untracked) {
+      try {
+        const file = await lstat(join(root, entry.path));
+        if (!file.isSymbolicLink() && (!file.isFile() || file.size > MAX_UNTRACKED_FILE_BYTES)) {
+          partial = true;
+          continue;
+        }
+      } catch {
+        partial = true;
+        continue;
+      }
+    }
+    const diff = await filePatch(root, entry);
+    if ((diff.exitCode === 0 || diff.exitCode === 1) && !diff.truncated) parsedFiles.push(patchChange(entry, diff.stdout.trimEnd()));
+    else partial = true;
+  }
+  const files = await addSyntaxSourcesBounded(root, parsedFiles);
+  return {
+    workspace: root,
+    files,
+    partial,
+    ...(partial ? { message: "Some workspace changes were omitted." } : {}),
+  };
+}
+
 async function workspaceChanges(agent: RuntimeAgent): Promise<RuntimeChanges> {
   const cwd = agent.location?.cwd;
   if (!cwd) throw new RuntimeAdapterError(404, "Herdr did not report a workspace for this agent.");
   const rootResult = await command(["git", "-C", cwd, "rev-parse", "--show-toplevel"]);
   if (rootResult.exitCode !== 0) throw new RuntimeAdapterError(404, "The agent workspace is not a Git worktree.");
-  const root = rootResult.stdout.trim();
-  const tracked = await command(["git", "-C", root, "diff", "--no-ext-diff", "--no-renames", "--binary", "HEAD", "--"]);
-  if (tracked.exitCode !== 0 || tracked.truncated)
-    throw new RuntimeAdapterError(502, tracked.truncated ? "The workspace diff is too large." : commandError(tracked, "Git diff failed."));
-
-  const untrackedResult = await command(["git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z"]);
-  if (untrackedResult.exitCode !== 0) throw new RuntimeAdapterError(502, commandError(untrackedResult, "Git status failed."));
-  const untracked = untrackedResult.stdout.split("\0").filter(Boolean);
-  const patches = splitPatch(tracked.stdout);
-  let partial = untracked.length > MAX_UNTRACKED_FILES;
-  for (const relativePath of untracked.slice(0, MAX_UNTRACKED_FILES)) {
-    try {
-      const metadata = await stat(join(root, relativePath));
-      if (!metadata.isFile() || metadata.size > MAX_UNTRACKED_FILE_BYTES) {
-        partial = true;
-        continue;
-      }
-    } catch {
-      partial = true;
-      continue;
-    }
-    const diff = await command(["git", "-C", root, "diff", "--no-ext-diff", "--no-index", "--binary", "--", "/dev/null", relativePath], { allowExitOne: true });
-    if ((diff.exitCode === 0 || diff.exitCode === 1) && !diff.truncated && diff.stdout) patches.push(diff.stdout.trimEnd());
-    else partial = true;
-  }
-  const parsedFiles = patches.map(patchChange).filter((file): file is NonNullable<typeof file> => file !== undefined);
-  const files = await Promise.all(parsedFiles.map((file) => addSyntaxSources(root, file)));
-  return {
-    workspace: root,
-    files,
-    partial,
-    ...(partial ? { message: "Some untracked or oversized files were omitted." } : {}),
-  };
+  return workspaceChangesAt(rootResult.stdout.trim());
 }
 
 export class HerdrRuntimeAdapter implements RuntimeAdapter {

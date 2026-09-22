@@ -1,5 +1,6 @@
 import type {
   RuntimeAgent,
+  RuntimeCapabilities,
   RuntimeChanges,
   RuntimeOutput,
   RuntimeSnapshot,
@@ -18,7 +19,7 @@ export interface RuntimeTerminalDimensions {
   readonly rows?: unknown;
 }
 
-export type RuntimeAdapterSnapshot = Omit<RuntimeSnapshot, "sources">;
+export type RuntimeAdapterSnapshot = Omit<RuntimeSnapshot, "sources" | "sourceHealth">;
 
 /** Server-side implementation for one runtime source. */
 export interface RuntimeAdapter {
@@ -41,8 +42,19 @@ interface AdapterResult {
   readonly snapshot: RuntimeAdapterSnapshot;
 }
 
+const UNAVAILABLE_CAPABILITIES: RuntimeCapabilities = {
+  terminal: false,
+  output: false,
+  conversation: false,
+  workspaceChanges: false,
+  spawn: false,
+  lineage: false,
+};
+const MAX_RUNTIME_REQUEST_BYTES = 64 * 1024;
+
 export class RuntimeGateway {
   private readonly adapters: readonly RuntimeAdapter[];
+  private readonly lastSuccessfulSnapshots = new Map<string, RuntimeAdapterSnapshot>();
 
   constructor(adapters: readonly RuntimeAdapter[]) {
     const sourceIds = new Set<string>();
@@ -61,31 +73,62 @@ export class RuntimeGateway {
     const errors = results
       .filter(({ snapshot }) => !snapshot.available && snapshot.error)
       .map(({ adapter, snapshot }) => `${adapter.source.label}: ${snapshot.error}`);
+    const sourceHealth = results.map(({ adapter, snapshot }) => {
+      if (snapshot.available) {
+        this.lastSuccessfulSnapshots.set(adapter.source.id, snapshot);
+        return {
+          source: adapter.source,
+          available: true,
+          stale: false,
+          fetchedAt: snapshot.fetchedAt,
+        };
+      }
+      return {
+        source: adapter.source,
+        available: false,
+        stale: this.lastSuccessfulSnapshots.has(adapter.source.id),
+        fetchedAt: snapshot.fetchedAt,
+        ...(snapshot.error ? { error: snapshot.error } : {}),
+      };
+    });
+    const agents = results.flatMap(({ adapter, snapshot }) => {
+      if (snapshot.available) {
+        return snapshot.agents.map((agent) => ({ ...agent, sourceAvailable: true, sourceStale: false }));
+      }
+      const stale = this.lastSuccessfulSnapshots.get(adapter.source.id);
+      return stale?.agents.map((agent) => ({
+        ...agent,
+        sourceAvailable: false,
+        sourceStale: true,
+        capabilities: UNAVAILABLE_CAPABILITIES,
+      })) ?? [];
+    });
     return {
       available,
       ...(firstSuccessful?.version ? { version: firstSuccessful.version } : {}),
       ...(firstSuccessful?.protocol !== undefined ? { protocol: firstSuccessful.protocol } : {}),
       fetchedAt: Math.max(...results.map(({ snapshot }) => snapshot.fetchedAt), Date.now()),
       sources: this.adapters.map(({ source }) => source),
-      agents: successful.flatMap(({ snapshot }) => snapshot.agents),
-      ...(!available && errors.length > 0 ? { error: errors.join(" · ") } : {}),
+      sourceHealth,
+      agents,
+      ...(errors.length > 0 ? { error: errors.join(" · ") } : {}),
     };
   }
 
   async readOutput(id: string, request: RuntimeOutputRequest): Promise<RuntimeOutput> {
-    const { adapter } = await this.resolve(id);
+    const adapter = await this.resolve(id);
     if (!adapter.readOutput) throw new RuntimeAdapterError(409, `${adapter.source.label} does not expose runtime output.`);
     return adapter.readOutput(id, request);
   }
 
   async readChanges(id: string): Promise<RuntimeChanges> {
-    const { adapter } = await this.resolve(id);
+    const adapter = await this.resolve(id);
     if (!adapter.readChanges) throw new RuntimeAdapterError(409, `${adapter.source.label} does not expose workspace changes.`);
     return adapter.readChanges(id);
   }
 
   async openTerminal(id: string, dimensions: RuntimeTerminalDimensions): Promise<RuntimeTerminalSession> {
-    const { adapter } = await this.resolve(id);
+    const adapter = await this.resolve(id);
     if (!adapter.openTerminal) throw new RuntimeAdapterError(409, `${adapter.source.label} does not expose an interactive terminal.`);
     return adapter.openTerminal(id, dimensions);
   }
@@ -112,12 +155,14 @@ export class RuntimeGateway {
     }));
   }
 
-  private async resolve(id: string): Promise<{ readonly adapter: RuntimeAdapter; readonly agent: RuntimeAgent }> {
+  private async resolve(id: string): Promise<RuntimeAdapter> {
+    const namespaced = this.adapters.find(({ source }) => id.startsWith(`${source.id}:`));
+    if (namespaced) return namespaced;
     const results = await this.readAdapterSnapshots();
     for (const { adapter, snapshot } of results) {
       if (!snapshot.available) continue;
       const agent = snapshot.agents.find((candidate) => candidate.id === id);
-      if (agent) return { adapter, agent };
+      if (agent) return adapter;
     }
     throw new RuntimeAdapterError(404, "That Agent is no longer available.");
   }
@@ -125,6 +170,19 @@ export class RuntimeGateway {
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+}
+
+async function boundedJson(request: Request): Promise<unknown> {
+  const declaredLength = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RUNTIME_REQUEST_BYTES)
+    throw new RuntimeAdapterError(413, "Runtime request body is too large.");
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_RUNTIME_REQUEST_BYTES) throw new RuntimeAdapterError(413, "Runtime request body is too large.");
+  try {
+    return JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new RuntimeAdapterError(400, "Runtime request body is invalid JSON.");
+  }
 }
 
 export async function handleRuntimeRequest(request: Request, gateway: RuntimeGateway): Promise<Response | undefined> {
@@ -143,7 +201,7 @@ export async function handleRuntimeRequest(request: Request, gateway: RuntimeGat
 
     const terminalOpen = /^\/api\/runtime\/agents\/([^/]+)\/terminal$/u.exec(url.pathname);
     if (request.method === "POST" && terminalOpen?.[1]) {
-      const payload = (await request.json()) as RuntimeTerminalDimensions;
+      const payload = (await boundedJson(request)) as RuntimeTerminalDimensions;
       try {
         return json(await gateway.openTerminal(decodeURIComponent(terminalOpen[1]), payload));
       } catch (error) {

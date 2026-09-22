@@ -43,7 +43,18 @@ export interface RuntimeAgent {
   readonly focused: boolean;
   readonly revision: number;
   readonly interactiveReady?: boolean;
+  /** False when this is retained data from a source that is currently unavailable. */
+  readonly sourceAvailable?: boolean;
+  readonly sourceStale?: boolean;
   readonly capabilities: RuntimeCapabilities;
+}
+
+export interface RuntimeSourceHealth {
+  readonly source: RuntimeSource;
+  readonly available: boolean;
+  readonly stale: boolean;
+  readonly fetchedAt: number;
+  readonly error?: string;
 }
 
 export interface RuntimeSnapshot {
@@ -52,6 +63,7 @@ export interface RuntimeSnapshot {
   readonly protocol?: number;
   readonly fetchedAt: number;
   readonly sources: readonly RuntimeSource[];
+  readonly sourceHealth: readonly RuntimeSourceHealth[];
   readonly agents: readonly RuntimeAgent[];
   readonly error?: string;
 }

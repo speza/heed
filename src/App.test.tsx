@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { App } from "./App";
 import { initialAgents } from "./fixtures";
@@ -210,6 +210,35 @@ describe("summoned hud", () => {
 
     expect(screen.getByLabelText("Terminal for Herdr adapter")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
+  });
+
+  test("preserves Enter on fleet close and filter controls", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "All agents" }));
+
+    const close = screen.getByRole("button", { name: "Close fleet" });
+    close.focus();
+    const closeEnter = createEvent.keyDown(close, { key: "Enter" });
+    fireEvent(close, closeEnter);
+    expect(closeEnter.defaultPrevented).toBe(false);
+    fireEvent.click(close);
+    expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "All agents" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "All agents" }));
+    expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
+    const filter = screen.getByRole("button", { name: /All sessions/ });
+    filter.focus();
+    const filterEnter = createEvent.keyDown(filter, { key: "Enter" });
+    fireEvent(filter, filterEnter);
+    expect(filterEnter.defaultPrevented).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /Needs you/ }));
+    expect(screen.getByRole("heading", { name: "Needs you" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument();
+
+    const fleet = screen.getByRole("heading", { name: "Needs you" }).closest(".fleet-drawer")!;
+    fireEvent.keyDown(fleet, { key: "Enter", metaKey: true });
+    expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument();
   });
 
   test("opens the terminal surface without a parallel message composer", () => {

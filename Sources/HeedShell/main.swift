@@ -26,6 +26,7 @@ private func hotKeyEventHandler(
 final class FloatingPanel: NSPanel {
   var onInactiveMouseDown: ((NSEvent) -> Void)?
   var onMouseMoved: ((NSPoint) -> Void)?
+  var forwardsInactiveMouseDown = false
 
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
@@ -34,7 +35,7 @@ final class FloatingPanel: NSPanel {
     if event.type == .mouseMoved {
       onMouseMoved?(convertPoint(toScreen: event.locationInWindow))
     }
-    if event.type == .leftMouseDown, !isKeyWindow {
+    if event.type == .leftMouseDown, !isKeyWindow, forwardsInactiveMouseDown {
       onInactiveMouseDown?(event)
       return
     }
@@ -134,12 +135,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let drawerHeight = drawer["height"] as? Double
       {
         drawerSize = CGSize(width: drawerWidth, height: drawerHeight)
+        panel.forwardsInactiveMouseDown = false
         hasConversationRail = false
         pointerInsidePanel = false
         panel.ignoresMouseEvents = false
       } else {
         drawerSize = nil
         hasConversationRail = payload["conversationRail"] as? Bool ?? false
+        panel.forwardsInactiveMouseDown = hasConversationRail
         if !hasConversationRail {
           pointerInsidePanel = false
           panel.ignoresMouseEvents = false
@@ -182,8 +185,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // FloatingPanel owns movement delivered to Heed; the global monitor below
     // observes the click-through rail while another application is active.
     panel.acceptsMouseMovedEvents = true
-    // The rail is an interactive control surface, not a title bar. Inactive
-    // clicks are forwarded to WebKit before the panel is activated.
+    // The compact update rail is an interactive control surface, not a title
+    // bar. Inactive clicks are forwarded to WebKit only while that rail is
+    // visible; drawers and their search/terminal/diff controls keep native
+    // AppKit/WebKit event delivery.
     panel.isMovableByWindowBackground = false
     panel.animationBehavior = .utilityWindow
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]

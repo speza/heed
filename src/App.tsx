@@ -508,7 +508,9 @@ function FleetView({
       tabIndex={-1}
       onKeyDown={(event) => {
         if (!keyboardActive) return;
-        const editing = event.target === search.current;
+        if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+        const target = event.target as HTMLElement;
+        const editing = target === search.current;
         if (editing) {
           if (event.key === "Escape") {
             event.preventDefault();
@@ -518,6 +520,11 @@ function FleetView({
           }
           return;
         }
+        const row = target.closest<HTMLElement>("[data-agent-id]");
+        const control = target.closest("button, a, select, textarea, [contenteditable]");
+        if (control && !row) return;
+        if (event.key === "Enter" && row) return;
+        if (!target.closest(".fleet-list") && target !== root.current) return;
         const key = event.key.toLowerCase();
         if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); event.stopPropagation(); move(1); }
         else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); event.stopPropagation(); move(-1); }
@@ -574,6 +581,7 @@ function FleetView({
                 {group.agents.map((agent) => (
                   <button
                     className={agent.id === activeId ? "is-selected" : ""}
+                    disabled={agent.runtime?.sourceAvailable === false}
                     onFocus={() => setActiveId(agent.id)}
                     onMouseEnter={() => setActiveId(agent.id)}
                     onClick={() => onTerminal(agent.id)}
@@ -648,12 +656,12 @@ function CommandPalette({
   }
 
   function run(index: number) {
+    onClose();
     if (index < matchedCommands.length) matchedCommands[index]?.run();
     else {
       const agent = matchedAgents[index - matchedCommands.length];
       if (agent) onSelectAgent(agent.id);
     }
-    onClose();
   }
 
   return (
@@ -892,8 +900,33 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   const [acknowledgedDone, setAcknowledgedDone] = useState<Readonly<Record<string, number>>>({});
   const [connection, setConnection] = useState<RuntimeConnection>(demo ? "demo" : "connecting");
   const [actionError, setActionError] = useState<string>();
+  const changesRequestRef = useRef<{ generation: number; controller?: AbortController }>({ generation: 0 });
 
-  const selected = agents.find((agent) => agent.id === selectedId) ?? agents[0] ?? runtimePlaceholder;
+  const selectedTarget = agents.find((agent) => agent.id === selectedId);
+  const selected = selectedTarget ?? runtimePlaceholder;
+
+  function cancelPendingChanges(): number {
+    const request = changesRequestRef.current;
+    request.controller?.abort();
+    request.controller = undefined;
+    request.generation += 1;
+    return request.generation;
+  }
+
+  useEffect(() => () => {
+    cancelPendingChanges();
+  }, []);
+
+  useEffect(() => {
+    if (!demo && selectedId && !selectedTarget) {
+      cancelPendingChanges();
+      if (replyOpen) {
+        setReplyOpen(false);
+        setActionError("The selected Agent is no longer available.");
+      }
+    }
+  }, [demo, replyOpen, selectedId, selectedTarget]);
+
   const selectedParent = useMemo(
     () => (selected.parentId ? agents.find((agent) => agent.id === selected.parentId) : undefined),
     [agents, selected],
@@ -940,17 +973,17 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       try {
         const snapshot = await fetchRuntime();
         if (!active) return;
-        if (!snapshot.available) {
-          setConnection((current) => current === "live" || current === "stale" ? "stale" : "offline");
-        } else {
-          const next = snapshot.agents.map(runtimeAgent);
-          setAgents((current) => next.map((agent) => {
-            const existing = current.find((candidate) => candidate.id === agent.id);
-            return existing?.changes.length ? { ...agent, workspace: existing.workspace, changes: existing.changes } : agent;
-          }));
-          setSelectedId((current) => next.some((agent) => agent.id === current) ? current : (next[0]?.id ?? ""));
-          setConnection("live");
-        }
+        const next = snapshot.agents.map(runtimeAgent);
+        setAgents((current) => next.map((agent) => {
+          const existing = current.find((candidate) => candidate.id === agent.id);
+          return existing?.changes.length ? { ...agent, workspace: existing.workspace, changes: existing.changes } : agent;
+        }));
+        setSelectedId((current) => {
+          if (!current) return next[0]?.id ?? "";
+          return current;
+        });
+        const sourceUnavailable = snapshot.sourceHealth.some((source) => !source.available);
+        setConnection(snapshot.available ? sourceUnavailable ? "stale" : "live" : next.length > 0 ? "stale" : "offline");
       } catch {
         if (active) setConnection((current) => current === "live" || current === "stale" ? "stale" : "offline");
       } finally {
@@ -975,12 +1008,6 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }, [selectedParent, selectedChildren]);
 
   // Keep the native panel geometry in step with the drawer stack.
-  const drawerRef = useRef(drawer);
-  drawerRef.current = drawer;
-  const edgeRef = useRef(edge);
-  edgeRef.current = edge;
-  const focusModeRef = useRef(focusMode);
-  focusModeRef.current = focusMode;
   // The native window is the source of truth for when a geometry change has
   // actually landed: the web renders the committed geometry so it never
   // paints a layout the window cannot show yet (the switch/close flicker).
@@ -991,7 +1018,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   // A terminal opened from the compact rail must wait for the native stage to
   // acknowledge its full drawer size. Otherwise xterm measures the clipped
   // rail and opens the remote session at a tiny column count.
-  const replyReady = replyOpen && rendered.drawer === drawer;
+  const replyReady = replyOpen && rendered.drawer === drawer && (demo || selectedTarget !== undefined);
 
   // Post before paint: the native window should move in step with the first
   // frame of the new web layout, not one frame after it.
@@ -1027,6 +1054,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }, []);
   useEffect(() => {
     const showRail = () => {
+      cancelPendingChanges();
       setPaletteOpen(false);
       setReplyOpen(false);
       setEvidence(null);
@@ -1034,11 +1062,12 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       returnToUpdateRail();
     };
     const prepareHidden = () => {
+      cancelPendingChanges();
       setPaletteOpen(false);
       setReplyOpen(false);
       setDrawer(null);
       setWindowFocused(false);
-      setPeekFocusState(false);
+      setPeekExpanded(false);
     };
     window.addEventListener("heed:shown", showRail);
     window.addEventListener("heed:hidden", prepareHidden);
@@ -1051,11 +1080,11 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   useEffect(() => {
     const expandPeek = () => {
       setWindowFocused(true);
-      setPeekFocusState(true);
+      setPeekExpanded(true);
     };
     const compactPeek = () => {
       setWindowFocused(false);
-      if (!peekHovered.current) setPeekFocusState(false);
+      if (!peekHovered.current) setPeekExpanded(false);
     };
     window.addEventListener("focus", expandPeek);
     window.addEventListener("blur", compactPeek);
@@ -1116,12 +1145,12 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   function handleNativeRailEnter() {
     if (drawer !== null || conversationPeekAgents.length === 0) return;
     peekHovered.current = true;
-    setPeekFocusState(true);
+    setPeekExpanded(true);
   }
 
   function handleNativeRailLeave() {
     peekHovered.current = false;
-    if (!windowFocused) setPeekFocusState(false);
+    if (!windowFocused) setPeekExpanded(false);
   }
 
   function handleHudMouseEnter() {
@@ -1136,6 +1165,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
 
   useEffect(() => {
     const toggleMainSurface = () => {
+      cancelPendingChanges();
       if (drawer !== null || paletteOpen || replyOpen) {
         setPaletteOpen(false);
         setReplyOpen(false);
@@ -1160,22 +1190,19 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }, [conversationPeekAgents]);
 
   function returnToUpdateRail(focusId?: string) {
+    cancelPendingChanges();
     setPaletteOpen(false);
     setReplyOpen(false);
     setEvidence(null);
     setActionError(undefined);
     setDrawer(null);
-    setPeekFocusState(true);
+    setPeekExpanded(true);
     setPeekActiveId(
       focusId && conversationPeekAgents.some((agent) => agent.id === focusId)
         ? focusId
         : conversationPeekAgents[0]?.id ?? "",
     );
     setPeekFocusRequest((request) => request + 1);
-  }
-
-  function setPeekFocusState(expanded: boolean) {
-    setPeekExpanded(expanded);
   }
 
   function acknowledgeDone(id: string) {
@@ -1186,7 +1213,10 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function closeCurrentSurface() {
-    if (paletteOpen) setPaletteOpen(false);
+    if (paletteOpen) {
+      cancelPendingChanges();
+      setPaletteOpen(false);
+    }
     else if (replyOpen) returnToUpdateRail(selected.id);
     else if (drawer === "help") setDrawer(helpReturnDrawer);
     else if (drawer === "diff") setDrawer(returnDrawer);
@@ -1283,6 +1313,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }, [paletteOpen, replyOpen, drawer, returnDrawer, helpReturnDrawer, demo, selected.runtime, conversationPeekAgents, peekActiveId]);
 
   function selectAgent(id: string) {
+    cancelPendingChanges();
     acknowledgeDone(id);
     if (conversationPeekAgents.some((agent) => agent.id === id)) setPeekActiveId(id);
     setSelectedId(id);
@@ -1292,6 +1323,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function openFleet(filter: FleetFilter) {
+    cancelPendingChanges();
     setPaletteOpen(false);
     setFleetFilter(filter);
     setReplyOpen(false);
@@ -1299,6 +1331,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function toggleFocusDrawer() {
+    cancelPendingChanges();
     if (drawer === "focus") {
       returnToUpdateRail();
       return;
@@ -1316,7 +1349,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function activatePeek(id: string) {
-    setPeekFocusState(true);
+    setPeekExpanded(true);
     setPeekActiveId(id);
   }
 
@@ -1328,6 +1361,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function toggleKeyboardHelp() {
+    cancelPendingChanges();
     if (drawer === "help") {
       setDrawer(helpReturnDrawer);
       return;
@@ -1339,8 +1373,13 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   function openTerminal(id: string) {
+    cancelPendingChanges();
     const agent = agents.find((candidate) => candidate.id === id);
     if (!agent) return;
+    if (agent.runtime?.sourceAvailable === false) {
+      setActionError(`${agent.runtime.sourceLabel} is unavailable; its retained Agent data is stale.`);
+      return;
+    }
     acknowledgeDone(id);
     setSelectedId(id);
     setEvidence(null);
@@ -1349,12 +1388,17 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
   }
 
   async function openChangesFor(id: string) {
+    const requestId = cancelPendingChanges();
     const agent = agents.find((candidate) => candidate.id === id);
     if (!agent) return;
     acknowledgeDone(id);
     setActionError(undefined);
     setSelectedId(id);
     setReturnDrawer(drawer === "fleet" ? "fleet" : "focus");
+    if (agent.runtime?.sourceAvailable === false) {
+      setActionError(`${agent.runtime.sourceLabel} is unavailable; its retained Agent data is stale.`);
+      return;
+    }
     if (!agent.runtime) {
       if (!demo) {
         setActionError("No runtime is attached to this agent.");
@@ -1368,18 +1412,31 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       setActionError(`${agent.runtime.sourceLabel} does not expose workspace changes.`);
       return;
     }
+    const controller = new AbortController();
+    changesRequestRef.current.controller = controller;
     try {
-      const result = await fetchAgentChanges(id);
+      const result = await fetchAgentChanges(id, controller.signal);
+      if (
+        requestId !== changesRequestRef.current.generation ||
+        controller.signal.aborted
+      ) return;
       setAgents((current) => current.map((candidate) => candidate.id === id ? { ...candidate, workspace: result.workspace, changes: result.files } : candidate));
       if (result.message) setActionError(result.message);
       setEvidence(null);
       setDrawer("diff");
     } catch (error) {
+      if (
+        controller.signal.aborted ||
+        requestId !== changesRequestRef.current.generation
+      ) return;
       setActionError(error instanceof Error ? error.message : "Workspace changes could not be read.");
+    } finally {
+      if (changesRequestRef.current.controller === controller) changesRequestRef.current.controller = undefined;
     }
   }
 
   async function openChanges() {
+    if (!selectedTarget) return;
     await openChangesFor(selected.id);
   }
 
@@ -1488,7 +1545,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
               selectedId={selected.id}
               filter={fleetFilter}
               onFilter={setFleetFilter}
-              onClose={() => setDrawer(null)}
+              onClose={() => { cancelPendingChanges(); setDrawer(null); }}
               onTerminal={openTerminal}
               onChanges={(id) => void openChangesFor(id)}
               keyboardActive={!replyOpen && !paletteOpen}
@@ -1520,7 +1577,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
           {paletteOpen ? (
             <CommandPalette
               agents={agents}
-              onClose={() => setPaletteOpen(false)}
+              onClose={() => { cancelPendingChanges(); setPaletteOpen(false); }}
               onSelectAgent={selectAgent}
               onFleet={openFleet}
               onSpawn={spawnChild}

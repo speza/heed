@@ -43,6 +43,9 @@ const server = Bun.serve<TerminalSocketData>({
   port,
   async fetch(request, runningServer) {
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/api/health") {
+      return Response.json({ service: "heed", status: "ok" }, { headers: { "cache-control": "no-store" } });
+    }
     const terminalSocket = terminalSocketPath.exec(url.pathname);
     if (terminalSocket?.[1]) {
       const origin = request.headers.get("origin");
@@ -71,7 +74,10 @@ const server = Bun.serve<TerminalSocketData>({
       }
     },
     message(socket, message) {
-      if (typeof message === "string") void socket.data.connection?.receive(message);
+      if (typeof message === "string") {
+        const pending = socket.data.connection?.receive(message);
+        if (pending) void pending.catch(() => socket.close(1011, "Terminal input failed"));
+      }
       else socket.send(JSON.stringify({ kind: "error", message: "Terminal messages must be JSON text." }));
     },
     close(socket) {

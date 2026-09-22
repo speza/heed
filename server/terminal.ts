@@ -20,7 +20,7 @@ type PendingTerminalMessage =
   | Omit<Extract<TerminalServerMessage, { readonly kind: "closed" }>, "deliveryId">
   | Extract<TerminalServerMessage, { readonly kind: "error" }>;
 
-interface TerminalProcess {
+export interface TerminalProcess {
   readonly stdin: { write(value: string | Uint8Array): number | Promise<number> };
   readonly stdout: AsyncIterable<Uint8Array>;
   readonly stderr: AsyncIterable<Uint8Array>;
@@ -28,19 +28,30 @@ interface TerminalProcess {
   kill(): void;
 }
 
+export type TerminalProcessFactory = (
+  paneId: string,
+  dimensions: { readonly columns: number; readonly rows: number },
+) => TerminalProcess;
+
 interface TerminalSession {
+  readonly id: string;
   readonly process: TerminalProcess;
   readonly listeners: Set<TerminalListener>;
   readonly replay: TerminalServerMessage[];
   nextDeliveryId: number;
+  replayBytes: number;
   releaseTimer?: ReturnType<typeof setTimeout>;
+  releasePromise?: Promise<void>;
   closed: boolean;
+  processExited: boolean;
   stderr: string;
 }
 
 const MAX_SESSIONS = 16;
 const MAX_REPLAY_MESSAGES = 128;
-const MAX_PENDING_TEXT = 8 * 1024 * 1024;
+const MAX_REPLAY_BYTES = 512 * 1024;
+const MAX_FRAME_BYTES = 256 * 1024;
+const MAX_FRAME_TEXT_BYTES = 512 * 1024;
 const RECONNECT_GRACE_MS = 15_000;
 const MIN_COLUMNS = 20;
 const MAX_COLUMNS = 400;
@@ -70,6 +81,9 @@ function frameMessage(value: unknown): PendingTerminalMessage | undefined {
     return { kind: "error", message: typeof record.reason === "string" ? record.reason : "Herdr terminal stream failed." };
   }
   if (typeof record.bytes !== "string") return undefined;
+  if (Buffer.byteLength(record.bytes) > MAX_FRAME_BYTES) {
+    return { kind: "closed", reason: "Herdr terminal frame exceeded the safe limit." };
+  }
   return {
     kind: "frame",
     bytes: record.bytes,
@@ -80,49 +94,67 @@ function frameMessage(value: unknown): PendingTerminalMessage | undefined {
   };
 }
 
+function spawnedTerminalProcess(
+  paneId: string,
+  dimensions: { readonly columns: number; readonly rows: number },
+): TerminalProcess {
+  const child = spawn("herdr", [
+    "terminal", "session", "control", paneId,
+    "--takeover",
+    "--cols", String(dimensions.columns),
+    "--rows", String(dimensions.rows),
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+  const exited = new Promise<number>((resolve) => {
+    child.once("close", (code) => resolve(code ?? 1));
+    child.once("error", () => resolve(127));
+  });
+  return {
+    stdin: {
+      write: (value) => new Promise<number>((resolve, reject) => {
+        child.stdin.write(value, (error) => error ? reject(error) : resolve(typeof value === "string" ? Buffer.byteLength(value) : value.byteLength));
+      }),
+    },
+    stdout: child.stdout,
+    stderr: child.stderr,
+    exited,
+    kill: () => child.kill(),
+  };
+}
+
 export class TerminalGateway {
   private readonly sessions = new Map<string, TerminalSession>();
+
+  constructor(private readonly createProcess: TerminalProcessFactory = spawnedTerminalProcess) {}
 
   async open(paneId: string, rawDimensions: { readonly columns?: unknown; readonly rows?: unknown }) {
     const dimensions = boundedDimensions(rawDimensions.columns, rawDimensions.rows);
     if (!dimensions) throw new Error("Terminal dimensions are invalid.");
     if (this.sessions.size >= MAX_SESSIONS) throw new Error("Too many Heed terminal sessions are open.");
 
-    const child = spawn("herdr", [
-      "terminal", "session", "control", paneId,
-      "--takeover",
-      "--cols", String(dimensions.columns),
-      "--rows", String(dimensions.rows),
-    ], { stdio: ["pipe", "pipe", "pipe"] });
-    const exited = new Promise<number>((resolve) => {
-      child.once("close", (code) => resolve(code ?? 1));
-      child.once("error", () => resolve(127));
-    });
-    const process: TerminalProcess = {
-      stdin: {
-        write: (value) => new Promise<number>((resolve, reject) => {
-          child.stdin.write(value, (error) => error ? reject(error) : resolve(typeof value === "string" ? Buffer.byteLength(value) : value.byteLength));
-        }),
-      },
-      stdout: child.stdout,
-      stderr: child.stderr,
-      exited,
-      kill: () => child.kill(),
-    };
+    const process = this.createProcess(paneId, dimensions);
     const sessionId = crypto.randomUUID();
     const session: TerminalSession = {
+      id: sessionId,
       process,
       listeners: new Set(),
       replay: [],
       nextDeliveryId: 1,
+      replayBytes: 0,
       closed: false,
+      processExited: false,
       stderr: "",
     };
     this.sessions.set(sessionId, session);
-    void this.consumeStdout(sessionId, session);
-    void this.consumeStderr(session);
+    void this.consumeStdout(session);
+    void this.consumeStderr(session).catch(() => undefined);
     void process.exited.then(() => {
+      session.processExited = true;
       if (!session.closed) this.publish(session, { kind: "closed", ...(session.stderr.trim() ? { reason: session.stderr.trim() } : {}) });
+      else this.scheduleRelease(session);
+    }).catch(() => {
+      session.processExited = true;
+      if (!session.closed) this.publish(session, { kind: "closed", reason: "Herdr terminal process failed." });
+      else this.scheduleRelease(session);
     });
     return { sessionId, message: "Connected to the Herdr terminal session." };
   }
@@ -130,7 +162,6 @@ export class TerminalGateway {
   connect(sessionId: string, listener: TerminalListener, afterDeliveryId?: number) {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error("Terminal session not found.");
-    this.cancelRelease(session);
     const oldest = session.replay.find((message): message is Exclude<TerminalServerMessage, { readonly kind: "error" }> => "deliveryId" in message);
     const oldestDeliveryId = oldest?.deliveryId;
     const latestDeliveryId = session.nextDeliveryId - 1;
@@ -138,20 +169,30 @@ export class TerminalGateway {
       throw new Error("Terminal reconnect cursor is invalid.");
     if (oldestDeliveryId !== undefined && afterDeliveryId !== undefined && afterDeliveryId < oldestDeliveryId - 1)
       throw new Error("Terminal reconnect history expired.");
-    for (const message of session.replay) {
-      if (!("deliveryId" in message) || afterDeliveryId === undefined || (message.deliveryId ?? 0) > afterDeliveryId)
-        listener(message);
+    if (!session.closed) this.cancelRelease(session);
+    try {
+      for (const message of session.replay) {
+        if (!("deliveryId" in message) || afterDeliveryId === undefined || (message.deliveryId ?? 0) > afterDeliveryId)
+          listener(message);
+      }
+    } catch (error) {
+      if (session.closed || session.listeners.size === 0) this.scheduleRelease(session);
+      throw error;
     }
     if (!session.closed) session.listeners.add(listener);
+    else this.scheduleRelease(session);
     let pending = Promise.resolve();
     return {
       receive: (text: string) => {
-        pending = pending.then(() => this.receive(session, text));
+        pending = pending
+          .catch(() => undefined)
+          .then(() => this.receive(session, text))
+          .catch((error) => this.failReceive(session, error));
         return pending;
       },
       close: () => {
         session.listeners.delete(listener);
-        if (session.listeners.size === 0) this.scheduleRelease(sessionId, session);
+        if (session.listeners.size === 0) this.scheduleRelease(session);
       },
     };
   }
@@ -159,18 +200,27 @@ export class TerminalGateway {
   async release(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    this.sessions.delete(sessionId);
-    this.cancelRelease(session);
-    if (!session.closed) {
-      try {
-        await session.process.stdin.write(`${JSON.stringify({ type: "terminal.release" })}\n`);
-      } catch {
-        // The controller may already have exited.
+    if (session.releasePromise) return session.releasePromise;
+    const cleanup = (async () => {
+      this.sessions.delete(sessionId);
+      this.cancelRelease(session);
+      session.closed = true;
+      session.listeners.clear();
+      if (!session.processExited) {
+        try {
+          await session.process.stdin.write(`${JSON.stringify({ type: "terminal.release" })}\n`);
+        } catch {
+          // The controller may already have exited.
+        }
+        try {
+          session.process.kill();
+        } catch {
+          // Cleanup remains idempotent even when the controller is gone.
+        }
       }
-      session.process.kill();
-    }
-    session.closed = true;
-    session.listeners.clear();
+    })();
+    session.releasePromise = cleanup;
+    await cleanup;
   }
 
   async closeAll(): Promise<void> {
@@ -178,7 +228,7 @@ export class TerminalGateway {
   }
 
   private async receive(session: TerminalSession, text: string): Promise<void> {
-    if (text.length > 65_536 || session.closed) return;
+    if (Buffer.byteLength(text) > MAX_FRAME_TEXT_BYTES || session.closed) return;
     let value: unknown;
     try {
       value = JSON.parse(text);
@@ -220,29 +270,62 @@ export class TerminalGateway {
     }
   }
 
-  private async consumeStdout(sessionId: string, session: TerminalSession): Promise<void> {
+  private async failReceive(session: TerminalSession, error: unknown): Promise<void> {
+    if (!session.closed) {
+      this.publish(session, { kind: "error", message: error instanceof Error ? error.message : "Terminal input failed." });
+      this.publish(session, { kind: "closed", reason: "Terminal input failed." });
+    }
+    await this.release(session.id);
+  }
+
+  private async consumeStdout(session: TerminalSession): Promise<void> {
     const decoder = new TextDecoder();
     let pending = "";
-    for await (const chunk of session.process.stdout) {
-      pending += decoder.decode(chunk, { stream: true });
-      if (pending.length > MAX_PENDING_TEXT) {
-        this.publish(session, { kind: "closed", reason: "Herdr terminal frame exceeded the safe limit." });
-        await this.release(sessionId);
-        return;
-      }
-      while (true) {
-        const newline = pending.indexOf("\n");
-        if (newline < 0) break;
-        const line = pending.slice(0, newline).trim();
-        pending = pending.slice(newline + 1);
-        if (!line) continue;
-        try {
-          const message = frameMessage(JSON.parse(line));
-          if (message) this.publish(session, message);
-        } catch {
-          this.publish(session, { kind: "error", message: "Herdr returned an invalid terminal frame." });
+    try {
+      for await (const chunk of session.process.stdout) {
+        pending += decoder.decode(chunk, { stream: true });
+        while (true) {
+          const newline = pending.indexOf("\n");
+          if (newline < 0) {
+            if (Buffer.byteLength(pending) > MAX_FRAME_TEXT_BYTES) {
+              this.publish(session, { kind: "closed", reason: "Herdr terminal frame exceeded the safe limit." });
+              await this.release(session.id);
+              return;
+            }
+            break;
+          }
+          const line = pending.slice(0, newline).trim();
+          pending = pending.slice(newline + 1);
+          if (!line) continue;
+          if (Buffer.byteLength(line) > MAX_FRAME_TEXT_BYTES) {
+            this.publish(session, { kind: "closed", reason: "Herdr terminal frame exceeded the safe limit." });
+            await this.release(session.id);
+            return;
+          }
+          try {
+            const parsed = JSON.parse(line) as unknown;
+            const oversized = parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+              typeof (parsed as Record<string, unknown>).bytes === "string" &&
+              Buffer.byteLength((parsed as Record<string, unknown>).bytes as string) > MAX_FRAME_BYTES;
+            const message = frameMessage(parsed);
+            if (message) {
+              this.publish(session, message);
+              if (message.kind === "closed") {
+                if (oversized) await this.release(session.id);
+                return;
+              }
+            }
+          } catch {
+            this.publish(session, { kind: "error", message: "Herdr returned an invalid terminal frame." });
+          }
         }
       }
+    } catch (error) {
+      if (!session.closed) {
+        this.publish(session, { kind: "error", message: error instanceof Error ? error.message : "Herdr terminal stream failed." });
+        this.publish(session, { kind: "closed", reason: "Herdr terminal stream failed." });
+      }
+      await this.release(session.id);
     }
   }
 
@@ -259,18 +342,24 @@ export class TerminalGateway {
       ? pending
       : { ...pending, deliveryId: session.nextDeliveryId++ };
     session.replay.push(message);
-    if (session.replay.length > MAX_REPLAY_MESSAGES) session.replay.shift();
+    session.replayBytes += Buffer.byteLength(JSON.stringify(message));
+    while ((session.replay.length > MAX_REPLAY_MESSAGES || session.replayBytes > MAX_REPLAY_BYTES) && session.replay.length > 1) {
+      const removed = session.replay.shift();
+      if (removed) session.replayBytes -= Buffer.byteLength(JSON.stringify(removed));
+    }
     if (message.kind === "closed") session.closed = true;
     for (const listener of session.listeners) listener(message);
-    if (message.kind === "closed") session.listeners.clear();
+    if (message.kind === "closed") {
+      session.listeners.clear();
+      this.scheduleRelease(session);
+    }
   }
 
-  private scheduleRelease(sessionId: string, session: TerminalSession): void {
-    if (session.releaseTimer || session.closed) return;
+  private scheduleRelease(session: TerminalSession): void {
+    if (session.releaseTimer || session.releasePromise) return;
     session.releaseTimer = setTimeout(() => {
       session.releaseTimer = undefined;
-      if (this.sessions.get(sessionId) === session && session.listeners.size === 0)
-        void this.release(sessionId);
+      if (this.sessions.get(session.id) === session && session.listeners.size === 0) void this.release(session.id);
     }, RECONNECT_GRACE_MS);
     session.releaseTimer.unref?.();
   }

@@ -25,6 +25,8 @@ export interface RuntimeAgentMetadata {
   readonly sourceLabel: string;
   readonly sourceKind: RuntimeKind;
   readonly capabilities: RuntimeCapabilities;
+  readonly sourceAvailable?: boolean;
+  readonly sourceStale?: boolean;
   readonly location?: RuntimeLocation;
   readonly revision: number;
   readonly interactiveReady?: boolean;
