@@ -14,7 +14,7 @@ export async function fetchRuntime(signal?: AbortSignal): Promise<RuntimeSnapsho
 
 export async function fetchAgentOutput(id: string, signal?: AbortSignal): Promise<RuntimeOutput> {
   return responseJson(
-    await fetch(`/api/runtime/agents/${encodeURIComponent(id)}/output?source=visible&format=ansi&lines=200`, {
+    await fetch(`/api/runtime/agents/${encodeURIComponent(id)}/output?source=visible&format=ansi&lines=400`, {
       cache: "no-store",
       signal,
     }),

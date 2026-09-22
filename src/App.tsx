@@ -1,11 +1,12 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { initialAgents } from "./fixtures";
+import { AmpTranscript } from "./AmpTranscript";
 import { DiffDrawer } from "./DiffDrawer";
 import { TerminalOutput } from "./TerminalOutput";
-import { fetchAgentChanges, fetchRuntime } from "./runtime/client";
+import { fetchAgentChanges, fetchAgentOutput, fetchRuntime } from "./runtime/client";
 import { runtimeAgent } from "./runtime/map";
-import type { RuntimeConnection } from "./runtime/types";
+import type { RuntimeConnection, RuntimeOpenAction } from "./runtime/types";
 import type { Agent, AgentStatus, ChatMessage } from "./types";
 
 type Drawer = "focus" | "fleet" | "diff" | "help";
@@ -90,6 +91,17 @@ function isDoneAcknowledged(agent: Agent, acknowledgedDone: Readonly<Record<stri
   return agent.status === "done" && acknowledgedDone[agent.id] === doneRevision(agent);
 }
 
+function canOpenAgentSurface(agent: Agent, demo: boolean) {
+  return demo || Boolean(agent.runtime?.capabilities.terminal || agent.runtime?.capabilities.output || agent.runtime?.capabilities.conversation);
+}
+
+function agentSurfaceLabel(agent: Agent) {
+  if (!agent.runtime || agent.runtime.capabilities.terminal) return "Terminal";
+  if (agent.runtime.capabilities.conversation) return "Conversation";
+  if (agent.runtime.capabilities.output) return "Output";
+  return "Session";
+}
+
 function shellMessage(type: string, payload: Record<string, unknown> = {}) {
   const bridge = (
     window as typeof window & {
@@ -111,6 +123,37 @@ function nativeInteractiveTarget(detail: NativePointerDetail) {
   return document
     .elementFromPoint(detail.x, detail.y)
     ?.closest<HTMLElement>("button, a, [role=\"button\"], summary") ?? null;
+}
+
+function safeExternalUrl(action: RuntimeOpenAction): string | undefined {
+  try {
+    const url = new URL(action.url);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function OpenInLink({ action, className = "chip chip-open" }: { readonly action?: RuntimeOpenAction; readonly className?: string }) {
+  if (!action) return null;
+  const url = safeExternalUrl(action);
+  if (!url) return null;
+  return (
+    <a
+      className={className}
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => {
+        if (hasBridge) {
+          event.preventDefault();
+          shellMessage("open-url", { url });
+        }
+      }}
+    >
+      {action.label}<span aria-hidden="true"> ↗</span>
+    </a>
+  );
 }
 
 function Glyph({ name }: { readonly name: "close" | "spark" | "branch" | "command" | "fleet" }) {
@@ -374,6 +417,38 @@ function EvidencePanel({ agent, evidence }: { readonly agent: Agent; readonly ev
   );
 }
 
+function RuntimeTranscript({ agentId, sourceLabel }: { readonly agentId: string; readonly sourceLabel: string }) {
+  const [output, setOutput] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setOutput(undefined);
+    setError(undefined);
+    setLoading(true);
+    void fetchAgentOutput(agentId, controller.signal)
+      .then((result) => setOutput(result.text))
+      .catch((reason) => {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Runtime output could not be read.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [agentId]);
+
+  return (
+    <section className="runtime-output is-transcript">
+      <header><span>{sourceLabel} transcript</span><small>Read-only thread history</small></header>
+      {loading ? <p>Reading the latest thread output…</p> : null}
+      {error ? <p className="runtime-error">{error}</p> : null}
+      {!loading && !error && output ? <AmpTranscript markdown={output} /> : null}
+      {!loading && !error && !output ? <small>No output was returned.</small> : null}
+    </section>
+  );
+}
+
 function TerminalCard({
   agent,
   messages,
@@ -385,6 +460,7 @@ function TerminalCard({
   readonly onClose: () => void;
   readonly actionError?: string;
 }) {
+  const surfaceLabel = agentSurfaceLabel(agent);
   return (
     <motion.section
       className="reply-card"
@@ -392,13 +468,14 @@ function TerminalCard({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 12, scale: 0.98 }}
       transition={enterTransition}
-      aria-label={`Terminal for ${agent.name}`}
+      aria-label={`${surfaceLabel} for ${agent.name}`}
     >
       <header className="reply-head">
         <StatusMark status={agent.status} />
         <strong>{agent.name}</strong>
         <span className="terminal-back-hint">Back to update rail <kbd>⌘W</kbd></span>
-        <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to update rail (Command-W)" type="button"><Glyph name="close" /></button>
+        <OpenInLink action={agent.runtime?.openIn} className="terminal-open-link" />
+        <button className="icon-button" onClick={onClose} aria-label={`Close ${surfaceLabel.toLowerCase()} and return to update rail (Command-W)`} type="button"><Glyph name="close" /></button>
       </header>
       <div className="reply-log">
         {messages.length === 0 && !agent.runtime ? <EmptyState>Nothing yet. Say what you need.</EmptyState> : null}
@@ -415,6 +492,8 @@ function TerminalCard({
             <header><span>Connected terminal</span><small>Wheel or PageUp/PageDown to scroll</small></header>
             <TerminalOutput agentId={agent.id} />
           </section>
+        ) : agent.runtime?.capabilities.output ? (
+          <RuntimeTranscript agentId={agent.id} sourceLabel={agent.runtime.sourceLabel} />
         ) : null}
       </div>
     </motion.section>
@@ -464,9 +543,12 @@ function FleetView({
   const attentionSummary = visible.length === 0
     ? "No agents need attention"
     : `${visible.length} ${visible.length === 1 ? "agent needs" : "agents need"} attention`;
+  const workspaceSummary = workspaces > 0
+    ? ` · ${workspaces} ${workspaces === 1 ? "workspace" : "workspaces"}`
+    : "";
   const fleetSummary = filter === "attention"
-    ? `${attentionSummary} · ${workspaces} ${workspaces === 1 ? "workspace" : "workspaces"}`
-    : `${visible.length} ${visible.length === 1 ? "session" : "sessions"} across ${workspaces} ${workspaces === 1 ? "workspace" : "workspaces"}`;
+    ? `${attentionSummary}${workspaceSummary}`
+    : `${visible.length} ${visible.length === 1 ? "session" : "sessions"}${workspaceSummary}`;
 
   useEffect(() => {
     if (!ordered.some((agent) => agent.id === activeId)) setActiveId(ordered[0]?.id ?? "");
@@ -590,7 +672,7 @@ function FleetView({
                     key={agent.id}
                   >
                     <span className="fleet-agent-copy"><strong>{agent.name}</strong><small>{agent.task}</small></span>
-                    <span className="fleet-agent-meta"><b>{agent.workspace ?? "minimal-ade"}</b><small>{agent.runtime?.sourceLabel ?? agent.provider} · {agent.model}</small></span>
+                    <span className="fleet-agent-meta"><b>{agent.workspace ?? (agent.runtime ? "Workspace unavailable" : "minimal-ade")}</b><small>{agent.runtime?.sourceLabel ?? agent.provider} · {agent.model}</small></span>
                     <span className="fleet-elapsed">{agent.elapsed}</span>
                     {agent.attention ? <span className="fleet-attention">{agent.attention}</span> : <span className="fleet-open">↗</span>}
                   </button>
@@ -602,7 +684,7 @@ function FleetView({
             <EmptyState>{query ? "No matching Agent sessions." : filter === "attention" ? "All clear. Press A to browse all Agents." : "No Agent sessions."}</EmptyState>
           ) : null}
           </div>
-          <div className="fleet-keyboard-help"><span>↑↓ / J K</span> navigate <span>↵</span> terminal <span>D</span> changes <span>/</span> search <span>A</span> attention/all</div>
+          <div className="fleet-keyboard-help"><span>↑↓ / J K</span> navigate <span>↵</span> open <span>D</span> changes <span>/</span> search <span>A</span> attention/all</div>
         </div>
       </div>
     </motion.section>
@@ -706,7 +788,7 @@ function CommandPalette({
 function KeyboardHelp({ onClose }: { readonly onClose: () => void }) {
   const groups = [
     { title: "Global", shortcuts: [["⌥Space", "Focus update rail"], ["F", "Open full session list"], ["↑ ↓ / J K", "Cycle focused updates"], ["Enter", "Open selected update"], ["?", "Keyboard shortcuts"], ["⌘K", "Command palette"], ["Sidebar ×", "Hide Heed"]] },
-    { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Navigate"], ["↵ / T", "Open terminal"], ["D", "Workspace changes"], ["/", "Search"], ["A", "Attention / all"], ["Esc", "Collapse to sidebar"]] },
+    { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Navigate"], ["↵ / T", "Open session surface"], ["D", "Workspace changes"], ["/", "Search"], ["A", "Attention / all"], ["Esc", "Collapse to sidebar"]] },
     { title: "Terminal", shortcuts: [["Esc", "Terminal input"], ["⌘W", "Back to update rail"], ["Wheel / PgUp PgDn", "Scroll"]] },
   ] as const;
 
@@ -1294,7 +1376,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
       }
       if (command || event.altKey || editable) return;
 
-      if (key === "t" && drawer === "focus" && !replyOpen && (demo || selected.runtime?.capabilities.terminal)) {
+      if (key === "t" && drawer === "focus" && !replyOpen && canOpenAgentSurface(selected, demo)) {
         event.preventDefault();
         setEvidence(null);
         setReplyOpen(true);
@@ -1383,7 +1465,7 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
     acknowledgeDone(id);
     setSelectedId(id);
     setEvidence(null);
-    if (demo || agent.runtime?.capabilities.terminal) setReplyOpen(true);
+    if (canOpenAgentSurface(agent, demo)) setReplyOpen(true);
     else setDrawer("focus");
   }
 
@@ -1533,8 +1615,9 @@ export function App({ demo = import.meta.env.MODE === "test" || new URLSearchPar
                     {!demo ? "Workspace changes" : "Changes"}{selected.changes.length > 0 ? <em>{selected.changes.length}</em> : null}
                   </button>
                 ) : null}
+                <OpenInLink action={selected.runtime?.openIn} />
                 <span className="bar-spacer" />
-                {(demo || selected.runtime?.capabilities.terminal) ? <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">Terminal <kbd>T</kbd></button> : null}
+                {canOpenAgentSurface(selected, demo) ? <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">{agentSurfaceLabel(selected)} <kbd>T</kbd></button> : null}
                 {demo ? <button className="chip chip-spawn" onClick={spawnChild} type="button"><Glyph name="branch" /> Spawn child</button> : null}
               </div>
             </motion.section>

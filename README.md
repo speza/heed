@@ -33,14 +33,24 @@ Use Bun 1.4.2 or newer (the repository pins 1.4.2 in `.bun-version` because
 older Bun releases reject this lockfile format).
 
 Open the URL printed by Vite. Herdr must be running for live data. Add
-`?demo=1` to use the synthetic fixture fleet instead. To exercise a mixed fleet
-locally, opt into the synthetic non-terminal adapter:
+`?demo=1` to use the synthetic fixture fleet instead. To add Amp Code's local
+threads to the live fleet, opt in explicitly:
+
+```sh
+HEED_ENABLE_AMP_RUNTIME=1 bun run dev
+```
+
+The Amp adapter reads the local CLI's thread list, overlays live activity when
+available, and exposes read-only thread output plus an `Open in Amp` link; it
+does not move credentials into the browser or own a terminal. Set
+`HEED_AMP_BIN` when `amp` is not on the server process's `PATH`. The synthetic
+non-terminal adapter is also available for contract testing:
 
 ```sh
 HEED_ENABLE_MOCK_RUNTIME=1 bun run dev
 ```
 
-The mock source is deliberately opt-in and never mixed into normal live mode.
+Optional sources are deliberately opt-in and never mixed into normal live mode.
 
 ## Run as a macOS floating panel
 
@@ -62,8 +72,8 @@ never resizes while summoned; panes compose inside the stage (see
   pane controls. Green is live, amber is connecting/stale, red is offline and
   grey marks fixture mode.
 - In the attention list, `↑`/`↓` or `J`/`K` navigate, `Enter` or `T` opens the
-  selected Agent's terminal, `D` opens workspace changes, `/` focuses search,
-  and `A` toggles between attention and all Agents.
+  selected Agent's terminal or runtime output, `D` opens workspace changes, `/`
+  focuses search, and `A` toggles between attention and all Agents.
 - In workspace changes, `↑`/`↓` or `J`/`K` navigate files, `Enter`/`Space`
   expands the active file, and `T` opens the terminal.
 - `⌘W` closes the terminal or changes surface and returns to the preserved
@@ -78,10 +88,11 @@ never resizes while summoned; panes compose inside the stage (see
 
 Summon one lightweight surface, see what needs you, and get out of the way.
 The constellation is local context, never a global graph (ADR-0001); the fleet
-is the escape hatch for scale. Herdr is the first runtime adapter and source of
-truth for the live slice (ADR-0002, ADR-0010); this app provides only a thin
-control and navigation layer. The normalized runtime contract is designed to
-combine terminal-based and API-based sessions without requiring every Agent to
-have a pane or PTY.
+is the escape hatch for scale. Heed is a thin control and navigation layer over
+runtime adapters (ADR-0002, ADR-0010). Herdr provides the interactive terminal;
+Amp Code is an optional read-only thread source (ADR-0011). The normalized
+runtime contract combines terminal-based and API-backed sessions without
+requiring every Agent to have a pane or PTY.
 
-Additional real runtime adapters and remote runtimes remain outside this POC.
+Bidirectional Amp conversation, remote-runtime management and additional
+provider authentication remain outside this POC.

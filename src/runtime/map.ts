@@ -25,7 +25,7 @@ export function runtimeAgent(agent: RuntimeAgent): Agent {
     task: title && title !== agent.name ? title : location?.cwd ?? `Live ${agent.source.label} agent`,
     status: runtimeStatus(agent.status),
     provider: agent.provider ?? agent.source.label,
-    model: agent.model ?? agent.kind,
+    model: agent.model ?? "Unavailable",
     workspace,
     elapsed: "live",
     ...(agent.status === "blocked"
@@ -43,6 +43,7 @@ export function runtimeAgent(agent: RuntimeAgent): Agent {
       ...(agent.sourceAvailable !== undefined ? { sourceAvailable: agent.sourceAvailable } : {}),
       ...(agent.sourceStale !== undefined ? { sourceStale: agent.sourceStale } : {}),
       location,
+      ...(agent.openIn ? { openIn: agent.openIn } : {}),
       revision: agent.revision,
       interactiveReady: agent.interactiveReady,
       rawStatus: agent.status,

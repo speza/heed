@@ -30,6 +30,12 @@ export interface RuntimeLocation {
   readonly cwd?: string;
 }
 
+/** Optional provider-owned navigation surfaced as an external link. */
+export interface RuntimeOpenAction {
+  readonly label: string;
+  readonly url: string;
+}
+
 export interface RuntimeAgent {
   readonly id: string;
   readonly source: RuntimeSource;
@@ -40,6 +46,7 @@ export interface RuntimeAgent {
   readonly status: RuntimeStatus;
   readonly location?: RuntimeLocation;
   readonly terminalTitle?: string;
+  readonly openIn?: RuntimeOpenAction;
   readonly focused: boolean;
   readonly revision: number;
   readonly interactiveReady?: boolean;

@@ -16,9 +16,12 @@ Each Agent carries its source and declared capabilities; the UI must not infer
 terminal, workspace, spawning or lineage support.
 
 Herdr retains PTY and process ownership; Heed's xterm surface controls only
-transient presentation size while it is attached. Additional runtime adapters,
-including Amp or direct API sessions, remain deferred until the common contract
-is validated (ADR-0010).
+transient presentation size while it is attached. Amp Code is an optional,
+read-only adapter over the local Amp CLI: it lists threads, overlays current
+activity when available, and exposes bounded Markdown output plus a link back
+to Amp's own thread surface, but does not own a terminal, workspace,
+credentials or conversation writes (ADR-0010, ADR-0011). Direct API sessions
+remain deferred.
 
 Status: live Herdr triage hypothesis under evaluation
 
@@ -40,7 +43,7 @@ it or one of its children, and get out of the way.
 ## Explicitly absent
 
 - real process launch or PTY ownership;
-- provider authentication and session recovery;
+- provider authentication and session recovery in Heed;
 - a project, ticket or workflow model;
 - editing, staging, committing or merging code;
 - arbitrary extension UI; and

@@ -1,4 +1,4 @@
-import type { RuntimeCapabilities, RuntimeKind, RuntimeLocation } from "./runtime/types";
+import type { RuntimeCapabilities, RuntimeKind, RuntimeLocation, RuntimeOpenAction } from "./runtime/types";
 
 export type AgentStatus = "working" | "waiting" | "needs-you" | "done" | "failed" | "unknown";
 
@@ -28,6 +28,7 @@ export interface RuntimeAgentMetadata {
   readonly sourceAvailable?: boolean;
   readonly sourceStale?: boolean;
   readonly location?: RuntimeLocation;
+  readonly openIn?: RuntimeOpenAction;
   readonly revision: number;
   readonly interactiveReady?: boolean;
   readonly rawStatus: "working" | "idle" | "blocked" | "done" | "unknown";

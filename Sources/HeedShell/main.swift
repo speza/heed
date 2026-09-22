@@ -165,6 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
       // vibrancy surface only now so stale drawer glass cannot remain visible.
       layoutBarSurface()
       layoutDrawerSurface()
+    case "open-url":
+      guard let rawURL = payload["url"] as? String,
+        let url = URL(string: rawURL),
+        let scheme = url.scheme?.lowercased(),
+        scheme == "http" || scheme == "https"
+      else { return }
+      NSWorkspace.shared.open(url)
     default:
       break
     }
