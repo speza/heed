@@ -25,7 +25,9 @@ The browser-facing runtime contract will:
 - expose optional location metadata rather than requiring panes, tabs or
   workspaces; and
 - declare capabilities per Agent/runtime, including terminal, output,
-  structured conversation, workspace changes, spawning and lineage.
+  structured conversation, workspace changes, spawning and lineage; and
+- optionally expose a provider-owned external `openIn` action without making
+  navigation a required runtime capability.
 
 The adapter boundary remains server-side:
 
@@ -47,6 +49,8 @@ be conflated.
   carries a source descriptor and capabilities.
 - Terminal, conversation and workspace controls can be rendered only when the
   selected runtime advertises them.
+- An optional `openIn` action can send the user back to the provider's own
+  surface; Heed validates it as an HTTP(S) link and does not proxy credentials.
 - API-backed sessions can use a structured conversation surface later without
   pretending to be panes or terminal sessions.
 - Mixed fleets need source-aware IDs and per-source health rather than one
@@ -56,6 +60,9 @@ be conflated.
 
 ## Non-goals
 
-- Adding Amp or direct API authentication in this slice.
+- Adding direct API authentication or bidirectional provider conversations in this slice.
 - Building a provider marketplace or arbitrary extension UI.
 - Moving PTY, process or agent execution ownership into Heed.
+
+Amp Code's bounded, opt-in read-only CLI adapter is defined separately in
+ADR-0011; it consumes this contract without changing the browser-facing model.

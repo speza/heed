@@ -68,6 +68,7 @@ describe("runtime mapping", () => {
     });
 
     expect(agent.provider).toBe("Herdr");
+    expect(agent.model).toBe("Unavailable");
 
     expect(agent.status).toBe("done");
     expect(agent.attention).toBe("Turn complete");

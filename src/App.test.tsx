@@ -13,6 +13,7 @@ vi.mock("@git-diff-view/react", () => ({
 afterEach(() => {
   cleanup();
   delete (document as unknown as { elementFromPoint?: Document["elementFromPoint"] }).elementFromPoint;
+  vi.restoreAllMocks();
 });
 
 function mockElementFromPoint(target: Element | null) {
@@ -239,6 +240,46 @@ describe("summoned hud", () => {
     const fleet = screen.getByRole("heading", { name: "Needs you" }).closest(".fleet-drawer")!;
     fireEvent.keyDown(fleet, { key: "Enter", metaKey: true });
     expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument();
+  });
+
+  test("opens read-only output for a non-terminal runtime", async () => {
+    const snapshot = {
+      available: true,
+      fetchedAt: Date.now(),
+      sources: [{ id: "amp-local", kind: "amp", label: "Amp Code" }],
+      agents: [{
+        id: "amp-local:T-123",
+        source: { id: "amp-local", kind: "amp", label: "Amp Code" },
+        name: "Amp review",
+        kind: "thread",
+        provider: "Amp Code",
+        openIn: { label: "Open in Amp", url: "https://ampcode.com/threads/T-123" },
+        status: "idle",
+        focused: false,
+        revision: 3,
+        capabilities: {
+          terminal: false,
+          output: true,
+          conversation: false,
+          workspaceChanges: false,
+          spawn: false,
+          lineage: false,
+        },
+      }],
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "/api/runtime") return { ok: true, json: async () => snapshot } as Response;
+      return { ok: true, json: async () => ({ text: "Latest Amp output", format: "text", truncated: false }) } as Response;
+    });
+
+    render(<App demo={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "All agents" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Amp review/ }));
+
+    expect(screen.getByLabelText("Output for Amp review")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open in Amp" })).toHaveAttribute("href", "https://ampcode.com/threads/T-123");
+    expect(await screen.findByText("Latest Amp output")).toBeInTheDocument();
+    expect(screen.getByText("Workspace unavailable")).toBeInTheDocument();
   });
 
   test("opens the terminal surface without a parallel message composer", () => {
