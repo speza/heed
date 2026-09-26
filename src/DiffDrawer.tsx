@@ -35,8 +35,11 @@ function DiffBody({ file }: { readonly file: FileChange }) {
     diffCharacters <= MAX_HIGHLIGHT_DIFF_CHARACTERS && diffLines <= MAX_HIGHLIGHT_DIFF_LINES;
 
   const lang = highlightLangFor(file.path);
+  const oversized = diffLines > MAX_RENDERED_DIFF_LINES;
 
+  // Parsing is the expensive part, so skip it entirely for diffs we won't render.
   const diffFile = useMemo(() => {
+    if (oversized) return undefined;
     const prepared = DiffFile.createInstance({
       oldFile: file.oldFile
         ? { fileName: file.path, fileLang: lang, content: file.oldFile.content }
@@ -50,9 +53,9 @@ function DiffBody({ file }: { readonly file: FileChange }) {
     prepared.init();
     prepared.buildUnifiedDiffLines();
     return prepared;
-  }, [file, lang]);
+  }, [file, lang, oversized]);
 
-  if (diffLines > MAX_RENDERED_DIFF_LINES) {
+  if (!diffFile) {
     return <div className="diff-drawer__limit">Diff rendering is limited to {MAX_RENDERED_DIFF_LINES.toLocaleString()} lines.</div>;
   }
 
@@ -200,7 +203,7 @@ export function DiffDrawer({
     >
       <header className="diff-drawer__header">
         <div>
-          <span className="eyebrow">{agent.runtime ? "WORKSPACE CHANGES" : "WORKING DIRECTORY"} · {agent.workspace ?? "minimal-ade"}</span>
+          <span className="eyebrow">{agent.runtime ? "WORKSPACE CHANGES" : "WORKING DIRECTORY"}{agent.workspace ? ` · ${agent.workspace}` : ""}</span>
           <h2>{agent.runtime ? "Workspace changes" : agent.name}</h2>
           <p>{agent.changes.length} files · +{additions} −{deletions}</p>
         </div>

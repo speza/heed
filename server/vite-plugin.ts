@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { WebSocketServer } from "ws";
 import { createRuntimeGateway } from "./runtime-config.ts";
-import { handleRuntimeRequest } from "./runtime-gateway.ts";
+import { handleRuntimeRequest, isTrustedLocalRequest } from "./runtime-gateway.ts";
 import { terminalGateway } from "./terminal.ts";
 
 const runtimeGateway = createRuntimeGateway();
@@ -39,8 +39,7 @@ async function serve(request: IncomingMessage, response: ServerResponse): Promis
     else if (value !== undefined) headers.set(name, value);
   }
   const requestUrl = new URL(`http://${request.headers.host ?? "127.0.0.1"}${request.url}`);
-  const origin = request.headers.origin;
-  if (origin && origin !== requestUrl.origin) {
+  if (!isTrustedLocalRequest(requestUrl, request.headers.origin)) {
     response.statusCode = 403;
     response.end("Request origin rejected.");
     return true;
@@ -81,8 +80,7 @@ export function runtimeGatewayPlugin(): Plugin {
         const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
         const match = terminalSocketPath.exec(url.pathname);
         if (!match?.[1]) return;
-        const origin = request.headers.origin;
-        if (origin && origin !== url.origin) {
+        if (!isTrustedLocalRequest(url, request.headers.origin)) {
           socket.destroy();
           return;
         }
@@ -95,7 +93,10 @@ export function runtimeGatewayPlugin(): Plugin {
         sockets.handleUpgrade(request, socket, head, (webSocket) => {
           let connection: ReturnType<typeof terminalGateway.connect> | undefined;
           try {
-            connection = terminalGateway.connect(match[1]!, (message) => webSocket.send(JSON.stringify(message)), afterDeliveryId);
+            connection = terminalGateway.connect(match[1]!, (message) => {
+              webSocket.send(JSON.stringify(message));
+              if (message.kind === "closed") webSocket.close(1000, "Terminal closed");
+            }, afterDeliveryId);
           } catch (error) {
             webSocket.send(JSON.stringify({ kind: "closed", reason: error instanceof Error ? error.message : "Terminal unavailable." }));
             webSocket.close(1008, "Terminal unavailable");
@@ -105,7 +106,7 @@ export function runtimeGatewayPlugin(): Plugin {
             if (!binary) {
               const pending = connection?.receive(message.toString());
               if (pending) void pending.catch(() => webSocket.close(1011, "Terminal input failed"));
-            }
+            } else webSocket.send(JSON.stringify({ kind: "error", message: "Terminal messages must be JSON text." }));
           });
           webSocket.on("close", () => connection?.close());
         });

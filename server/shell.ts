@@ -42,7 +42,7 @@ export async function runShell(): Promise<void> {
   try {
     await waitForServer(port, server);
     const shell = Bun.spawn(["swift", "run", "HeedShell"], {
-      env: { ...process.env, MINIMAL_ADE_DEV_URL: `http://127.0.0.1:${port}/` },
+      env: { ...process.env, HEED_DEV_URL: `http://127.0.0.1:${port}/` },
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",

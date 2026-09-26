@@ -17,6 +17,19 @@ function decodeFrame(value: string): Uint8Array {
 
 const MAX_RECONNECT_DELAY_MS = 2_000;
 
+/** Resolves xterm colours from the semantic theme tokens (ADR-0009). */
+function terminalTheme(node: Element) {
+  const style = getComputedStyle(node);
+  const token = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  const accent = token("--accent", "#babbf1");
+  return {
+    background: "#00000000",
+    foreground: token("--text", "#c6d0f5"),
+    cursor: accent,
+    selectionBackground: /^#[0-9a-f]{6}$/iu.test(accent) ? `${accent}33` : accent,
+  };
+}
+
 export function TerminalOutput({ agentId }: { readonly agentId: string }) {
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting to terminal…");
@@ -35,12 +48,7 @@ export function TerminalOutput({ agentId }: { readonly agentId: string }) {
       fontSize: 13,
       lineHeight: 1.2,
       scrollback: 2_000,
-      theme: {
-        background: "#00000000",
-        foreground: "#c6d0f5",
-        cursor: "#babbf1",
-        selectionBackground: "#babbf133",
-      },
+      theme: terminalTheme(node),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);

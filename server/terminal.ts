@@ -145,6 +145,8 @@ export class TerminalGateway {
       stderr: "",
     };
     this.sessions.set(sessionId, session);
+    // Expire the session if no client ever connects; connect() cancels this.
+    this.scheduleRelease(session);
     void this.consumeStdout(session);
     void this.consumeStderr(session).catch(() => undefined);
     void process.exited.then(() => {
