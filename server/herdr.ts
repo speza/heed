@@ -13,7 +13,9 @@ const MAX_CHANGED_FILES = 64;
 const MAX_UNTRACKED_FILES = 40;
 const MAX_UNTRACKED_FILE_BYTES = 256_000;
 const MAX_SYNTAX_SOURCE_BYTES = 512_000;
-const MAX_SYNTAX_SOURCE_CONCURRENCY = 4;
+const MAX_GIT_CONCURRENCY = 4;
+// Git's well-known empty tree, used as the diff base before the first commit.
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 interface CommandResult {
   readonly exitCode: number;
@@ -79,7 +81,7 @@ function boundedText(value: string, maximum = 240): string {
   return value.replace(/\s+/gu, " ").trim().slice(0, maximum);
 }
 
-async function command(argv: readonly string[], _options?: { readonly allowExitOne?: boolean }): Promise<CommandResult> {
+async function command(argv: readonly string[]): Promise<CommandResult> {
   return new Promise((resolve) => {
     const child = spawn(argv[0]!, argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
@@ -257,47 +259,51 @@ async function workingTreeSource(root: string, path: string): Promise<{ readonly
   }
 }
 
-async function headSource(root: string, path: string): Promise<{ readonly content: string } | undefined> {
-  const result = await command(["git", "-C", root, "show", `HEAD:${path}`]);
+async function headSource(root: string, base: string, path: string): Promise<{ readonly content: string } | undefined> {
+  if (base === EMPTY_TREE) return undefined;
+  const result = await command(["git", "-C", root, "show", `${base}:${path}`]);
   if (result.exitCode !== 0 || result.truncated) return undefined;
   return syntaxSource(result.stdout);
 }
 
-async function addSyntaxSources(root: string, file: NonNullable<ReturnType<typeof patchChange>>) {
+async function addSyntaxSources(root: string, base: string, file: FileChange): Promise<FileChange> {
   if (file.binary) return file;
   const [oldFile, newFile] = await Promise.all([
-    file.kind === "added" ? undefined : headSource(root, file.path),
+    file.kind === "added" ? undefined : headSource(root, base, file.path),
     file.kind === "deleted" ? undefined : workingTreeSource(root, file.path),
   ]);
   return { ...file, ...(oldFile ? { oldFile } : {}), ...(newFile ? { newFile } : {}) };
 }
 
-async function addSyntaxSourcesBounded(
-  root: string,
-  files: readonly ReturnType<typeof patchChange>[],
-): Promise<readonly Awaited<ReturnType<typeof addSyntaxSources>>[]> {
-  const results: Array<Awaited<ReturnType<typeof addSyntaxSources>> | undefined> = Array.from({ length: files.length });
+/** Maps items through an async function with at most MAX_GIT_CONCURRENCY in flight, preserving order. */
+async function mapBounded<T, R>(items: readonly T[], map: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = Array.from({ length: items.length });
   let nextIndex = 0;
   const worker = async () => {
-    while (true) {
+    while (nextIndex < items.length) {
       const index = nextIndex++;
-      if (index >= files.length) return;
-      results[index] = await addSyntaxSources(root, files[index]!);
+      results[index] = await map(items[index]!);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(MAX_SYNTAX_SOURCE_CONCURRENCY, files.length) }, worker));
-  return results as readonly Awaited<ReturnType<typeof addSyntaxSources>>[];
+  await Promise.all(Array.from({ length: Math.min(MAX_GIT_CONCURRENCY, items.length) }, worker));
+  return results;
 }
 
-async function filePatch(root: string, metadata: GitChangeMetadata): Promise<CommandResult> {
-  const args = metadata.untracked
+async function filePatch(root: string, base: string, metadata: GitChangeMetadata): Promise<CommandResult> {
+  return command(metadata.untracked
     ? ["git", "-C", root, "diff", "--no-ext-diff", "--no-index", "--binary", "--", "/dev/null", metadata.path]
-    : ["git", "-C", root, "diff", "--no-ext-diff", "--no-renames", "--binary", "HEAD", "--", metadata.path];
-  return command(args, { allowExitOne: metadata.untracked });
+    : ["git", "-C", root, "diff", "--no-ext-diff", "--no-renames", "--binary", base, "--", metadata.path]);
+}
+
+/** Diff base for a worktree: HEAD, or the empty tree before the first commit. */
+async function diffBase(root: string): Promise<string> {
+  const head = await command(["git", "-C", root, "rev-parse", "--verify", "--quiet", "HEAD"]);
+  return head.exitCode === 0 ? "HEAD" : EMPTY_TREE;
 }
 
 export async function workspaceChangesAt(root: string): Promise<RuntimeChanges> {
-  const trackedMetadata = await command(["git", "-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "-z", "--no-renames", "HEAD", "--"]);
+  const base = await diffBase(root);
+  const trackedMetadata = await command(["git", "-C", root, "-c", "core.quotepath=false", "diff", "--name-status", "-z", "--no-renames", base, "--"]);
   if (trackedMetadata.exitCode !== 0 || trackedMetadata.truncated)
     throw new RuntimeAdapterError(502, trackedMetadata.truncated ? "The workspace change list is too large." : commandError(trackedMetadata, "Git status failed."));
 
@@ -310,25 +316,21 @@ export async function workspaceChangesAt(root: string): Promise<RuntimeChanges> 
   const candidateMetadata = [...tracked, ...untracked.slice(0, MAX_UNTRACKED_FILES)];
   let partial = untracked.length > MAX_UNTRACKED_FILES || candidateMetadata.length > MAX_CHANGED_FILES;
   const metadata = candidateMetadata.slice(0, MAX_CHANGED_FILES);
-  const parsedFiles: FileChange[] = [];
-  for (const entry of metadata) {
+  const patches = await mapBounded(metadata, async (entry): Promise<FileChange | undefined> => {
     if (entry.untracked) {
       try {
         const file = await lstat(join(root, entry.path));
-        if (!file.isSymbolicLink() && (!file.isFile() || file.size > MAX_UNTRACKED_FILE_BYTES)) {
-          partial = true;
-          continue;
-        }
+        if (!file.isSymbolicLink() && (!file.isFile() || file.size > MAX_UNTRACKED_FILE_BYTES)) return undefined;
       } catch {
-        partial = true;
-        continue;
+        return undefined;
       }
     }
-    const diff = await filePatch(root, entry);
-    if ((diff.exitCode === 0 || diff.exitCode === 1) && !diff.truncated) parsedFiles.push(patchChange(entry, diff.stdout.trimEnd()));
-    else partial = true;
-  }
-  const files = await addSyntaxSourcesBounded(root, parsedFiles);
+    const diff = await filePatch(root, base, entry);
+    return (diff.exitCode === 0 || diff.exitCode === 1) && !diff.truncated ? patchChange(entry, diff.stdout.trimEnd()) : undefined;
+  });
+  const parsedFiles = patches.filter((file): file is FileChange => file !== undefined);
+  if (parsedFiles.length < patches.length) partial = true;
+  const files = await mapBounded(parsedFiles, (file) => addSyntaxSources(root, base, file));
   return {
     workspace: root,
     files,

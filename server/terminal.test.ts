@@ -91,6 +91,18 @@ afterEach(() => {
 });
 
 describe("TerminalGateway lifecycle", () => {
+  test("releases a session that is opened but never connected", async () => {
+    vi.useFakeTimers();
+    const fake = fakeFactory();
+    const gateway = new TerminalGateway(fake.factory);
+    const opened = await gateway.open("pane", { columns: 80, rows: 24 });
+
+    vi.advanceTimersByTime(15_000);
+    await flush();
+    expect(fake.processes[0]!.killed.value).toBe(1);
+    expect(() => gateway.connect(opened.sessionId, () => undefined)).toThrow("Terminal session not found");
+  });
+
   test("closes and kills an owned controller after an oversized frame", async () => {
     const fake = fakeFactory();
     const gateway = new TerminalGateway(fake.factory);

@@ -244,7 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
   }
 
   private func loadWebExperience() {
-    if let developmentURL = ProcessInfo.processInfo.environment["MINIMAL_ADE_DEV_URL"],
+    if let developmentURL = ProcessInfo.processInfo.environment["HEED_DEV_URL"],
       let url = URL(string: developmentURL)
     {
       webView.load(URLRequest(url: url))

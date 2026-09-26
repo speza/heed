@@ -1,5 +1,4 @@
 import type {
-  RuntimeAgent,
   RuntimeCapabilities,
   RuntimeChanges,
   RuntimeOutput,
@@ -168,6 +167,26 @@ export class RuntimeGateway {
   }
 }
 
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * Heed only serves loopback clients. Checking the Host header (not just Origin)
+ * defeats DNS rebinding, where a hostile page's Origin and Host both name the
+ * attacker's domain while the connection lands on 127.0.0.1.
+ */
+export function isTrustedLocalRequest(url: URL, origin: string | null | undefined): boolean {
+  if (!LOOPBACK_HOSTNAMES.has(url.hostname)) return false;
+  return !origin || origin === url.origin;
+}
+
+function agentId(encoded: string): string {
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    throw new RuntimeAdapterError(400, "Agent id is not valid URL encoding.");
+  }
+}
+
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
 }
@@ -189,8 +208,7 @@ export async function handleRuntimeRequest(request: Request, gateway: RuntimeGat
   const url = new URL(request.url);
   if (url.pathname !== "/api/runtime" && !url.pathname.startsWith("/api/runtime/")) return undefined;
   try {
-    const origin = request.headers.get("origin");
-    if (origin && origin !== url.origin) throw new RuntimeAdapterError(403, "Request origin rejected.");
+    if (!isTrustedLocalRequest(url, request.headers.get("origin"))) throw new RuntimeAdapterError(403, "Request origin rejected.");
     if (request.method === "GET" && url.pathname === "/api/runtime") return json(await gateway.snapshot());
 
     const terminalRelease = /^\/api\/runtime\/terminal\/([0-9a-f-]{36})$/u.exec(url.pathname);
@@ -203,7 +221,7 @@ export async function handleRuntimeRequest(request: Request, gateway: RuntimeGat
     if (request.method === "POST" && terminalOpen?.[1]) {
       const payload = (await boundedJson(request)) as RuntimeTerminalDimensions;
       try {
-        return json(await gateway.openTerminal(decodeURIComponent(terminalOpen[1]), payload));
+        return json(await gateway.openTerminal(agentId(terminalOpen[1]), payload));
       } catch (error) {
         if (error instanceof RuntimeAdapterError) throw error;
         throw new RuntimeAdapterError(409, error instanceof Error ? error.message : "Terminal session could not be opened.");
@@ -212,7 +230,7 @@ export async function handleRuntimeRequest(request: Request, gateway: RuntimeGat
 
     const match = /^\/api\/runtime\/agents\/([^/]+)\/(output|changes)$/u.exec(url.pathname);
     if (!match) throw new RuntimeAdapterError(404, "Runtime endpoint not found.");
-    const id = decodeURIComponent(match[1]!);
+    const id = agentId(match[1]!);
     const action = match[2]!;
 
     if (request.method === "GET" && action === "output") {

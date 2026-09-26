@@ -31,14 +31,14 @@ describe("summoned hud", () => {
   });
 
   test("uses the aperture signal for runtime health without a separate dot", () => {
-    const { container } = render(<App />);
+    const { container } = render(<App demo />);
     expect(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ })).toBeInTheDocument();
     expect(container.querySelector(".aperture-runtime-demo")).toBeInTheDocument();
     expect(container.querySelector(".runtime-connection")).not.toBeInTheDocument();
   });
 
   test("surfaces needing-attention agents on the bar", () => {
-    render(<App />);
+    render(<App demo />);
     const triage = screen.getByRole("button", { name: /need you/ });
     expect(triage).toBeInTheDocument();
 
@@ -51,7 +51,7 @@ describe("summoned hud", () => {
   });
 
   test("surfaces attention and completed conversations beside the collapsed rail", () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
 
@@ -65,7 +65,7 @@ describe("summoned hud", () => {
   });
 
   test("acknowledges a completed conversation locally after opening it", () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
     const peek = screen.getByRole("complementary", { name: "Conversation updates" });
@@ -78,7 +78,7 @@ describe("summoned hud", () => {
   });
 
   test("focuses the update rail with the summon event and opens the full fleet with F", () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent(window, new Event("heed:focus-list"));
 
@@ -102,7 +102,7 @@ describe("summoned hud", () => {
   });
 
   test("mirrors inactive rail entry and exit from the native shell", () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
 
     const peek = screen.getByRole("complementary", { name: "Conversation updates" });
@@ -121,7 +121,7 @@ describe("summoned hud", () => {
   });
 
   test("mirrors inactive pointer hover and first-click actions from the native shell", () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
 
     const peek = screen.getByRole("complementary", { name: "Conversation updates" });
@@ -154,7 +154,7 @@ describe("summoned hud", () => {
   });
 
   test("cycles collapsed updates with alternate arrow keys and opens the selected terminal", () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.click(screen.getByRole("button", { name: /Runtime demo; toggle focus drawer/ }));
 
@@ -171,7 +171,7 @@ describe("summoned hud", () => {
   });
 
   test("recentres the selected child and opens its keyboard-navigable diff", async () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.click(screen.getByRole("button", { name: /Floating prototype/ }));
     expect(screen.getByRole("heading", { name: "Floating prototype" })).toBeInTheDocument();
@@ -194,13 +194,13 @@ describe("summoned hud", () => {
   });
 
   test("spawns a child that immediately becomes the focus", () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.click(screen.getByRole("button", { name: /Spawn child/i }));
     expect(screen.getByRole("heading", { name: "New collaborator" })).toBeInTheDocument();
   });
 
   test("finds a session in the fleet and opens its terminal", async () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.click(screen.getByRole("button", { name: "All agents" }));
     expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
@@ -213,7 +213,7 @@ describe("summoned hud", () => {
   });
 
   test("preserves Enter on fleet close and filter controls", () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.click(screen.getByRole("button", { name: "All agents" }));
 
     const close = screen.getByRole("button", { name: "Close fleet" });
@@ -242,7 +242,7 @@ describe("summoned hud", () => {
   });
 
   test("opens the terminal surface without a parallel message composer", () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.keyDown(window, { key: "t" });
     expect(screen.getByLabelText("Terminal for Synthesis lead")).toBeInTheDocument();
@@ -250,7 +250,7 @@ describe("summoned hud", () => {
   });
 
   test("navigates the attention list into a terminal and back", async () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.click(screen.getByRole("button", { name: /need you/ }));
 
     const fleet = screen.getByRole("heading", { name: "Needs you" }).closest(".fleet-drawer")!;
@@ -271,7 +271,7 @@ describe("summoned hud", () => {
   });
 
   test("toggles the main pane without hiding the sidebar", async () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent(window, new Event("heed:toggle-main"));
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Synthesis lead" })).not.toBeInTheDocument());
@@ -282,7 +282,7 @@ describe("summoned hud", () => {
   });
 
   test("opens and closes keyboard help with the question-mark shortcut", () => {
-    render(<App />);
+    render(<App demo />);
 
     fireEvent.keyDown(window, { key: "?", shiftKey: true });
     expect(screen.getByRole("heading", { name: "Keyboard shortcuts" })).toBeInTheDocument();
@@ -294,7 +294,7 @@ describe("summoned hud", () => {
   });
 
   test("restores update-rail focus whenever the native panel is summoned", async () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent(window, new Event("heed:hidden"));
 
     fireEvent(window, new Event("heed:shown"));
@@ -306,7 +306,7 @@ describe("summoned hud", () => {
   });
 
   test("restores fleet keyboard focus after choosing All agents in the palette", async () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.click(screen.getByRole("button", { name: /need you/ }));
     const fleet = screen.getByRole("heading", { name: "Needs you" }).closest(".fleet-drawer")!;
 
@@ -323,7 +323,7 @@ describe("summoned hud", () => {
   });
 
   test("returns from the terminal to the update rail with Escape or Command-W", async () => {
-    render(<App />);
+    render(<App demo />);
     fireEvent.keyDown(window, { key: "t" });
 
     const terminal = screen.getByLabelText("Terminal for Synthesis lead");
@@ -339,5 +339,12 @@ describe("summoned hud", () => {
     fireEvent.keyDown(window, { key: "w", metaKey: true });
     await waitFor(() => expect(screen.queryByLabelText("Terminal for Synthesis lead")).not.toBeInTheDocument());
     expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
+  });
+
+  test("keyboard shortcuts act on the most recently selected agent", () => {
+    render(<App demo />);
+    fireEvent.click(screen.getByRole("button", { name: /Floating prototype/ }));
+    fireEvent.keyDown(window, { key: "d" });
+    expect(screen.getByRole("heading", { name: "Floating prototype" })).toBeInTheDocument();
   });
 });

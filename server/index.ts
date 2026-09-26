@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { extname, join, normalize, resolve } from "node:path";
-import { handleRuntimeRequest } from "./runtime-gateway.ts";
+import { handleRuntimeRequest, isTrustedLocalRequest } from "./runtime-gateway.ts";
 import { createRuntimeGateway } from "./runtime-config.ts";
 import { terminalGateway, type TerminalServerMessage } from "./terminal.ts";
 
@@ -43,13 +43,12 @@ const server = Bun.serve<TerminalSocketData>({
   port,
   async fetch(request, runningServer) {
     const url = new URL(request.url);
+    if (!isTrustedLocalRequest(url, request.headers.get("origin"))) return new Response("Request origin rejected.", { status: 403 });
     if (request.method === "GET" && url.pathname === "/api/health") {
       return Response.json({ service: "heed", status: "ok" }, { headers: { "cache-control": "no-store" } });
     }
     const terminalSocket = terminalSocketPath.exec(url.pathname);
     if (terminalSocket?.[1]) {
-      const origin = request.headers.get("origin");
-      if (origin && origin !== url.origin) return new Response("Request origin rejected.", { status: 403 });
       const rawAfter = url.searchParams.get("after");
       const afterDeliveryId = rawAfter === null ? undefined : Number(rawAfter);
       if (afterDeliveryId !== undefined && (!Number.isSafeInteger(afterDeliveryId) || afterDeliveryId < 0))

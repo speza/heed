@@ -16,7 +16,7 @@
 
 - `src/` owns the web experience and should remain usable in an ordinary
   browser.
-- `Sources/MinimalADEShell/` is a deliberately tiny macOS AppKit/WebKit shell.
+- `Sources/HeedShell/` is a deliberately tiny macOS AppKit/WebKit shell.
 - Keep the native bridge limited to window and operating-system behaviour.
 - Future agent state should arrive through a transport-neutral API rather than
   through a growing JavaScript/native bridge.

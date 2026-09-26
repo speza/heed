@@ -148,4 +148,28 @@ describe("runtime gateway", () => {
       "Duplicate runtime source: duplicate",
     );
   });
+  test("rejects requests addressed to a non-loopback host", async () => {
+    const gateway = new RuntimeGateway([]);
+    const response = await handleRuntimeRequest(
+      new Request("http://evil.test:4311/api/runtime", { headers: { origin: "http://evil.test:4311" } }),
+      gateway,
+    );
+    expect(response?.status).toBe(403);
+  });
+
+  test("accepts loopback hosts with a matching or absent origin", async () => {
+    const gateway = new RuntimeGateway([]);
+    for (const url of ["http://127.0.0.1:4311/api/runtime", "http://localhost:5173/api/runtime", "http://[::1]:4311/api/runtime"]) {
+      const response = await handleRuntimeRequest(new Request(url, { headers: { origin: new URL(url).origin } }), gateway);
+      expect(response?.status).toBe(200);
+    }
+    const noOrigin = await handleRuntimeRequest(new Request("http://127.0.0.1:4311/api/runtime"), gateway);
+    expect(noOrigin?.status).toBe(200);
+  });
+
+  test("rejects malformed agent ids as a bad request", async () => {
+    const gateway = new RuntimeGateway([]);
+    const response = await handleRuntimeRequest(new Request("http://127.0.0.1:4311/api/runtime/agents/%E0%A4%A/changes"), gateway);
+    expect(response?.status).toBe(400);
+  });
 });
