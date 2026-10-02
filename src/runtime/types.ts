@@ -19,6 +19,8 @@ export interface RuntimeCapabilities {
   readonly workspaceChanges: boolean;
   readonly spawn: boolean;
   readonly lineage: boolean;
+  /** Accepts quick replies: a text prompt, or an answer to a blocking dialog. */
+  readonly reply: boolean;
 }
 
 /** Runtime-neutral location metadata. A source may expose only some fields. */
@@ -42,6 +44,10 @@ export interface RuntimeAgent {
   readonly terminalTitle?: string;
   readonly focused: boolean;
   readonly revision: number;
+  /** Runtime-ordered lifecycle sequence; changes only when the status changes. */
+  readonly stateSequence?: number;
+  /** Epoch ms when the gateway observed the current status begin; absent when unknown. */
+  readonly statusSince?: number;
   readonly interactiveReady?: boolean;
   /** False when this is retained data from a source that is currently unavailable. */
   readonly sourceAvailable?: boolean;
@@ -81,6 +87,12 @@ export interface RuntimeChanges {
   readonly partial: boolean;
   readonly message?: string;
 }
+
+/** A quick reply. `prompt` submits text; `choice` and `key` answer a blocking dialog. */
+export type RuntimeInput =
+  | { readonly kind: "prompt"; readonly text: string }
+  | { readonly kind: "choice"; readonly value: string }
+  | { readonly kind: "key"; readonly key: "esc" };
 
 export interface RuntimeTerminalSession {
   readonly sessionId: string;

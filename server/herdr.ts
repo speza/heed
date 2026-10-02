@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { FileChange } from "../src/types.ts";
-import type { RuntimeAgent, RuntimeCapabilities, RuntimeChanges, RuntimeLocation, RuntimeSource } from "../src/runtime/types.ts";
+import type { RuntimeAgent, RuntimeCapabilities, RuntimeChanges, RuntimeInput, RuntimeLocation, RuntimeSource } from "../src/runtime/types.ts";
 import { RuntimeAdapterError } from "./runtime-gateway.ts";
 import type { RuntimeAdapter, RuntimeAdapterSnapshot, RuntimeOutputRequest, RuntimeTerminalDimensions } from "./runtime-gateway.ts";
 import { terminalGateway } from "./terminal.ts";
@@ -67,6 +67,7 @@ const HERDR_CAPABILITIES = {
   workspaceChanges: true,
   spawn: false,
   lineage: false,
+  reply: true,
 } as const satisfies RuntimeCapabilities;
 
 interface NormalizedAgent extends RuntimeAgent {
@@ -132,7 +133,98 @@ function status(value: string | undefined): NormalizedAgent["status"] {
     : "unknown";
 }
 
-async function readSnapshot(): Promise<NormalizedSnapshot> {
+interface ObservedStatus {
+  readonly status: NormalizedAgent["status"];
+  readonly sequence?: number;
+  readonly since?: number;
+}
+
+/**
+ * Remembers when this adapter observed each pane change status. Herdr does not
+ * report timestamps, so a pane first seen mid-state has no `statusSince` rather
+ * than a fabricated one.
+ */
+export class StatusClock {
+  private readonly observed = new Map<string, ObservedStatus>();
+
+  observe(paneId: string, status: NormalizedAgent["status"], sequence: number | undefined, at: number): number | undefined {
+    const previous = this.observed.get(paneId);
+    const changed = previous !== undefined &&
+      (previous.status !== status || (sequence !== undefined && previous.sequence !== undefined && sequence !== previous.sequence));
+    const since = changed ? at : previous?.since;
+    this.observed.set(paneId, { status, ...(sequence !== undefined ? { sequence } : {}), ...(since !== undefined ? { since } : {}) });
+    return since;
+  }
+
+  retain(paneIds: ReadonlySet<string>): void {
+    for (const paneId of this.observed.keys()) if (!paneIds.has(paneId)) this.observed.delete(paneId);
+  }
+}
+
+const AGENT_PRIORITY: Readonly<Record<string, number>> = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
+
+/** Normalizes `herdr api snapshot` output, mirroring Herdr's Agents-panel ordering. */
+export function normalizeSnapshot(stdout: string, fetchedAt: number, clock?: StatusClock): NormalizedSnapshot {
+  try {
+    const envelope = JSON.parse(stdout) as HerdrSnapshotEnvelope;
+    const snapshot = envelope.result?.snapshot;
+    if (!snapshot || !Array.isArray(snapshot.agents)) throw new Error("Agent inventory missing.");
+    const workspaces = new Map(
+      (snapshot.workspaces ?? [])
+        .filter((workspace): workspace is HerdrWorkspaceRecord & { workspace_id: string } => Boolean(workspace.workspace_id))
+        .map((workspace) => [workspace.workspace_id, workspace]),
+    );
+    const rank = (agent: HerdrAgentRecord) => AGENT_PRIORITY[agent.agent_status ?? "unknown"] ?? AGENT_PRIORITY.unknown!;
+    const orderedAgents = snapshot.agents
+      .map((agent, index) => ({ agent, index }))
+      .sort((left, right) =>
+        rank(left.agent) - rank(right.agent) ||
+        (right.agent.state_change_seq ?? 0) - (left.agent.state_change_seq ?? 0) ||
+        left.index - right.index,
+      )
+      .map(({ agent }) => agent);
+    const agents = orderedAgents.flatMap((agent): NormalizedAgent[] => {
+      if (!agent.pane_id || !agent.workspace_id || !agent.tab_id || !agent.agent) return [];
+      const workspace = workspaces.get(agent.workspace_id);
+      const cwd = workspace?.worktree?.checkout_path ?? agent.foreground_cwd ?? agent.cwd;
+      const agentStatus = status(agent.agent_status);
+      const statusSince = clock?.observe(agent.pane_id, agentStatus, agent.state_change_seq, fetchedAt);
+      return [{
+        id: `${HERDR_SOURCE.id}:${agent.pane_id}`,
+        source: HERDR_SOURCE,
+        name: agent.name ?? agent.title ?? agent.terminal_title_stripped ?? `${agent.agent} · ${agent.pane_id}`,
+        kind: agent.display_agent ?? agent.agent,
+        status: agentStatus,
+        location: {
+          workspaceId: agent.workspace_id,
+          ...(workspace?.label ? { workspaceLabel: workspace.label } : {}),
+          tabId: agent.tab_id,
+          paneId: agent.pane_id,
+          ...(cwd ? { cwd } : {}),
+        },
+        ...(agent.terminal_title_stripped ? { terminalTitle: agent.terminal_title_stripped } : {}),
+        focused: agent.focused === true,
+        revision: agent.revision ?? 0,
+        ...(agent.state_change_seq !== undefined ? { stateSequence: agent.state_change_seq } : {}),
+        ...(statusSince !== undefined ? { statusSince } : {}),
+        interactiveReady: agent.interactive_ready !== false,
+        capabilities: HERDR_CAPABILITIES,
+      }];
+    });
+    clock?.retain(new Set(agents.map((agent) => agent.location.paneId!)));
+    return {
+      available: true,
+      ...(snapshot.version ? { version: snapshot.version } : {}),
+      ...(snapshot.protocol !== undefined ? { protocol: snapshot.protocol } : {}),
+      fetchedAt,
+      agents,
+    };
+  } catch {
+    return { available: false, fetchedAt, agents: [], error: "Herdr returned an invalid snapshot." };
+  }
+}
+
+async function readSnapshot(clock: StatusClock): Promise<NormalizedSnapshot> {
   const fetchedAt = Date.now();
   const result = await command(["herdr", "api", "snapshot"]);
   if (result.exitCode !== 0 || result.truncated) {
@@ -145,58 +237,7 @@ async function readSnapshot(): Promise<NormalizedSnapshot> {
         : commandError(result, "Herdr is unavailable."),
     };
   }
-  try {
-    const envelope = JSON.parse(result.stdout) as HerdrSnapshotEnvelope;
-    const snapshot = envelope.result?.snapshot;
-    if (!snapshot || !Array.isArray(snapshot.agents)) throw new Error("Agent inventory missing.");
-    const workspaces = new Map(
-      (snapshot.workspaces ?? [])
-        .filter((workspace): workspace is HerdrWorkspaceRecord & { workspace_id: string } => Boolean(workspace.workspace_id))
-        .map((workspace) => [workspace.workspace_id, workspace]),
-    );
-    const priority: Readonly<Record<string, number>> = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
-    const orderedAgents = snapshot.agents
-      .map((agent, index) => ({ agent, index }))
-      .sort((left, right) =>
-        (priority[left.agent.agent_status ?? "unknown"] ?? 3) - (priority[right.agent.agent_status ?? "unknown"] ?? 3) ||
-        (right.agent.state_change_seq ?? 0) - (left.agent.state_change_seq ?? 0) ||
-        left.index - right.index,
-      )
-      .map(({ agent }) => agent);
-    const agents = orderedAgents.flatMap((agent): NormalizedAgent[] => {
-      if (!agent.pane_id || !agent.workspace_id || !agent.tab_id || !agent.agent) return [];
-      const workspace = workspaces.get(agent.workspace_id);
-      const cwd = workspace?.worktree?.checkout_path ?? agent.foreground_cwd ?? agent.cwd;
-      return [{
-        id: `${HERDR_SOURCE.id}:${agent.pane_id}`,
-        source: HERDR_SOURCE,
-        name: agent.name ?? agent.title ?? agent.terminal_title_stripped ?? `${agent.agent} · ${agent.pane_id}`,
-        kind: agent.display_agent ?? agent.agent,
-        status: status(agent.agent_status),
-        location: {
-          workspaceId: agent.workspace_id,
-          ...(workspace?.label ? { workspaceLabel: workspace.label } : {}),
-          tabId: agent.tab_id,
-          paneId: agent.pane_id,
-          ...(cwd ? { cwd } : {}),
-        },
-        ...(agent.terminal_title_stripped ? { terminalTitle: agent.terminal_title_stripped } : {}),
-        focused: agent.focused === true,
-        revision: agent.revision ?? 0,
-        interactiveReady: agent.interactive_ready !== false,
-        capabilities: HERDR_CAPABILITIES,
-      }];
-    });
-    return {
-      available: true,
-      ...(snapshot.version ? { version: snapshot.version } : {}),
-      ...(snapshot.protocol !== undefined ? { protocol: snapshot.protocol } : {}),
-      fetchedAt,
-      agents,
-    };
-  } catch {
-    return { available: false, fetchedAt, agents: [], error: "Herdr returned an invalid snapshot." };
-  }
+  return normalizeSnapshot(result.stdout, fetchedAt, clock);
 }
 
 export interface GitChangeMetadata {
@@ -347,15 +388,39 @@ async function workspaceChanges(agent: RuntimeAgent): Promise<RuntimeChanges> {
   return workspaceChangesAt(rootResult.stdout.trim());
 }
 
+/**
+ * Builds the Herdr command for a quick reply. Herdr rejects prompts while an
+ * agent waits at a dialog, so prompts require a non-blocked agent and dialog
+ * answers require a blocked one. Callers pass a freshly revalidated agent.
+ */
+export function inputCommand(agent: RuntimeAgent, input: RuntimeInput): readonly string[] {
+  const paneId = agent.location?.paneId;
+  if (!paneId) throw new RuntimeAdapterError(404, "Herdr did not report a pane for this agent.");
+  const blocked = agent.status === "blocked";
+  if (input.kind === "prompt") {
+    if (blocked) throw new RuntimeAdapterError(409, "This agent is waiting at a dialog; answer it before sending a prompt.");
+    return ["herdr", "agent", "prompt", paneId, "--", input.text];
+  }
+  if (!blocked) throw new RuntimeAdapterError(409, "This agent is no longer waiting at a dialog.");
+  return input.kind === "choice"
+    ? ["herdr", "pane", "send-text", paneId, "--", input.value]
+    : ["herdr", "agent", "send-keys", paneId, input.key];
+}
+
+/** Read-only requests may validate against a snapshot this recent instead of spawning another. */
+const READ_VALIDATION_MAX_AGE_MS = 1_500;
+
 export class HerdrRuntimeAdapter implements RuntimeAdapter {
   readonly source = HERDR_SOURCE;
+  private readonly clock = new StatusClock();
+  private recent?: NormalizedSnapshot;
 
   async snapshot(): Promise<RuntimeAdapterSnapshot> {
-    return readSnapshot();
+    return this.read();
   }
 
   async readOutput(id: string, request: RuntimeOutputRequest) {
-    const agent = await this.targetAgent(id);
+    const agent = await this.targetAgent(id, true);
     const paneId = agent.location?.paneId;
     if (!paneId) throw new RuntimeAdapterError(404, "Herdr did not report a pane for this agent.");
     const result = await command([
@@ -369,7 +434,7 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
   }
 
   async readChanges(id: string): Promise<RuntimeChanges> {
-    return workspaceChanges(await this.targetAgent(id));
+    return workspaceChanges(await this.targetAgent(id, true));
   }
 
   async openTerminal(id: string, dimensions: RuntimeTerminalDimensions) {
@@ -387,8 +452,23 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
     await terminalGateway.release(sessionId);
   }
 
-  private async targetAgent(id: string): Promise<RuntimeAgent> {
-    const snapshot = await readSnapshot();
+  async sendInput(id: string, input: RuntimeInput): Promise<void> {
+    const result = await command(inputCommand(await this.targetAgent(id), input));
+    if (result.exitCode !== 0) throw new RuntimeAdapterError(502, commandError(result, "Herdr did not accept the reply."));
+  }
+
+  private async read(): Promise<NormalizedSnapshot> {
+    const snapshot = await readSnapshot(this.clock);
+    this.recent = snapshot.available ? snapshot : undefined;
+    return snapshot;
+  }
+
+  /** Revalidates the target pane; mutations always read a fresh snapshot. */
+  private async targetAgent(id: string, readOnly = false): Promise<RuntimeAgent> {
+    const recent = this.recent;
+    const snapshot = readOnly && recent && Date.now() - recent.fetchedAt < READ_VALIDATION_MAX_AGE_MS
+      ? recent
+      : await this.read();
     if (!snapshot.available) throw new RuntimeAdapterError(503, snapshot.error ?? "Herdr is unavailable.");
     const agent = snapshot.agents.find((candidate) => candidate.id === id);
     if (!agent) throw new RuntimeAdapterError(404, "That Herdr agent is no longer available.");

@@ -54,4 +54,24 @@
   --line: color-mix(in srgb, var(--text) 10%, transparent);
   --line-strong: color-mix(in srgb, var(--text) 17%, transparent);
   --shadow: rgba(15, 17, 27, 0.34);
+
+  /* Terminal palette for read-only screen previews */
+  --ansi-black: var(--ctp-surface-1);
+  --ansi-red: var(--ctp-red);
+  --ansi-green: var(--ctp-green);
+  --ansi-yellow: var(--ctp-yellow);
+  --ansi-blue: var(--ctp-blue);
+  --ansi-magenta: var(--ctp-pink);
+  --ansi-cyan: var(--ctp-teal);
+  --ansi-white: var(--ctp-subtext-1);
+  --ansi-bright-black: var(--ctp-surface-2);
+  --ansi-bright-red: var(--ctp-red);
+  --ansi-bright-green: var(--ctp-green);
+  --ansi-bright-yellow: var(--ctp-yellow);
+  --ansi-bright-blue: var(--ctp-blue);
+  --ansi-bright-magenta: var(--ctp-pink);
+  --ansi-bright-cyan: var(--ctp-teal);
+  --ansi-bright-white: var(--ctp-subtext-0);
+  --ansi-inverse-foreground: var(--ctp-base);
+  --ansi-inverse-background: var(--ctp-text);
 }

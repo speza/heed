@@ -29,6 +29,9 @@ export default defineConfig({
     // ES-module scripts (opaque "null" origin, CORS). Emit a classic bundle.
     modulePreload: false,
     rollupOptions: { output: { format: "iife" } },
+    // A classic IIFE bundle cannot code-split, so one large local chunk is
+    // expected; it loads from loopback, never over a network.
+    chunkSizeWarningLimit: 2_500,
   },
 });
 

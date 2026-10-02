@@ -3,9 +3,9 @@ import { enterTransition, Glyph } from "./ui";
 
 export function KeyboardHelp({ onClose }: { readonly onClose: () => void }) {
   const groups = [
-    { title: "Global", shortcuts: [["⌥Space", "Focus update rail"], ["F", "Open full session list"], ["↑ ↓ / J K", "Cycle focused updates"], ["Enter", "Open selected update"], ["?", "Keyboard shortcuts"], ["⌘K", "Command palette"], ["Sidebar ×", "Hide Heed"]] },
-    { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Navigate"], ["↵ / T", "Open terminal"], ["D", "Workspace changes"], ["/", "Search"], ["A", "Attention / all"], ["Esc", "Collapse to sidebar"]] },
-    { title: "Terminal", shortcuts: [["Esc", "Terminal input"], ["⌘W", "Back to update rail"], ["Wheel / PgUp PgDn", "Scroll"]] },
+    { title: "Global", shortcuts: [["⌥Space", "Open what needs you"], ["F", "All Agents"], ["↑ ↓ / J K", "Cycle rail updates"], ["↵", "Open update's terminal"], ["⌘K", "Command palette"], ["?", "Keyboard shortcuts"], ["Spine ×", "Hide Heed"]] },
+    { title: "Agent list", shortcuts: [["↑ ↓ / J K", "Move · preview screen"], ["↵ / T", "Open terminal"], ["D", "Workspace changes"], ["R", "Quick reply"], ["1–9", "Answer the agent's dialog"], ["E", "Mark a finished turn seen"], ["/", "Search (↵ opens)"], ["A", "Needs you / all"], ["Esc", "Back to the rail"]] },
+    { title: "Terminal & changes", shortcuts: [["⌘W", "Back to the rail"], ["Esc", "Sent to the terminal"], ["Wheel / PgUp PgDn", "Scroll the terminal"], ["↵ / Space", "Expand a changed file"], ["T", "Terminal from changes"]] },
   ] as const;
 
   return (

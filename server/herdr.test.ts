@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, test } from "vitest";
-import { workspaceChangesAt } from "./herdr";
+import { inputCommand, normalizeSnapshot, StatusClock, workspaceChangesAt } from "./herdr";
 
 const roots: string[] = [];
 
@@ -108,5 +108,86 @@ describe("Herdr workspace changes", () => {
     expect(changedLinks.every((file) => file.newFile === undefined)).toBe(true);
     expect(JSON.stringify(changes)).not.toContain(secret);
     await expect(readFile(join(root, "tracked-link.txt"), "utf8")).resolves.toBe(secret);
+  });
+});
+
+describe("Herdr snapshot normalization", () => {
+  function envelope(agents: readonly Record<string, unknown>[]) {
+    return JSON.stringify({
+      result: {
+        snapshot: {
+          version: "0.9.1",
+          protocol: 22,
+          workspaces: [{ workspace_id: "w1", label: "heed", worktree: { checkout_path: "/repo/heed" } }],
+          agents,
+        },
+      },
+    });
+  }
+
+  function pane(paneId: string, status: string, sequence: number) {
+    return { pane_id: paneId, workspace_id: "w1", tab_id: "w1:t1", agent: "claude", agent_status: status, state_change_seq: sequence };
+  }
+
+  test("orders by Herdr priority, then newest state change", () => {
+    const snapshot = normalizeSnapshot(envelope([
+      pane("w1:p1", "idle", 9),
+      pane("w1:p2", "working", 4),
+      pane("w1:p3", "blocked", 1),
+      pane("w1:p4", "done", 3),
+      pane("w1:p5", "working", 8),
+      { pane_id: "w1:p6", workspace_id: "w1", tab_id: "w1:t1" },
+    ]), 1_000);
+
+    expect(snapshot.agents.map((agent) => agent.location.paneId)).toEqual(["w1:p3", "w1:p4", "w1:p5", "w1:p2", "w1:p1"]);
+    expect(snapshot.agents[0]).toMatchObject({ status: "blocked", stateSequence: 1, location: { workspaceLabel: "heed", cwd: "/repo/heed" } });
+  });
+
+  test("reports time in state only from an observed transition", () => {
+    const clock = new StatusClock();
+
+    const first = normalizeSnapshot(envelope([pane("w1:p1", "working", 1)]), 1_000, clock);
+    const unchanged = normalizeSnapshot(envelope([pane("w1:p1", "working", 1)]), 3_000, clock);
+    const blocked = normalizeSnapshot(envelope([pane("w1:p1", "blocked", 2)]), 5_000, clock);
+    const later = normalizeSnapshot(envelope([pane("w1:p1", "blocked", 2)]), 9_000, clock);
+
+    expect(first.agents[0]?.statusSince).toBeUndefined();
+    expect(unchanged.agents[0]?.statusSince).toBeUndefined();
+    expect(blocked.agents[0]?.statusSince).toBe(5_000);
+    expect(later.agents[0]?.statusSince).toBe(5_000);
+  });
+
+  test("treats a new turn in the same state as a fresh state", () => {
+    const clock = new StatusClock();
+    normalizeSnapshot(envelope([pane("w1:p1", "done", 1)]), 1_000, clock);
+
+    const nextTurn = normalizeSnapshot(envelope([pane("w1:p1", "done", 4)]), 6_000, clock);
+
+    expect(nextTurn.agents[0]?.statusSince).toBe(6_000);
+  });
+
+  test("rejects malformed snapshots without inventing agents", () => {
+    expect(normalizeSnapshot("not json", 1_000)).toMatchObject({ available: false, agents: [] });
+    expect(normalizeSnapshot(JSON.stringify({ result: {} }), 1_000)).toMatchObject({ available: false });
+  });
+});
+
+describe("Herdr quick replies", () => {
+  const agent = (status: "blocked" | "idle" | "working") => normalizeSnapshot(JSON.stringify({
+    result: { snapshot: { agents: [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "claude", agent_status: status }] } },
+  }), 0).agents[0]!;
+
+  test("submits prompts after an argument separator so text is never parsed as a flag", () => {
+    expect(inputCommand(agent("idle"), { kind: "prompt", text: "--help me" })).toEqual(["herdr", "agent", "prompt", "w1:p1", "--", "--help me"]);
+  });
+
+  test("answers a blocking dialog with a literal choice or Escape", () => {
+    expect(inputCommand(agent("blocked"), { kind: "choice", value: "1" })).toEqual(["herdr", "pane", "send-text", "w1:p1", "--", "1"]);
+    expect(inputCommand(agent("blocked"), { kind: "key", key: "esc" })).toEqual(["herdr", "agent", "send-keys", "w1:p1", "esc"]);
+  });
+
+  test("refuses replies that do not match the agent's current state", () => {
+    expect(() => inputCommand(agent("blocked"), { kind: "prompt", text: "hello" })).toThrow(/waiting at a dialog/);
+    expect(() => inputCommand(agent("working"), { kind: "choice", value: "1" })).toThrow(/no longer waiting/);
   });
 });

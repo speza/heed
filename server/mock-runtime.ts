@@ -10,6 +10,7 @@ const MOCK_CAPABILITIES = {
   workspaceChanges: false,
   spawn: false,
   lineage: false,
+  reply: false,
 } as const satisfies RuntimeCapabilities;
 
 /**

@@ -1,4 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
+import { AgentPreview } from "./AgentPreview";
+import { displayPath } from "./runtime/map";
 import type { Agent } from "./types";
 import { EmptyState, enterTransition, easeOutExpo, glideTransition, Glyph, StatusMark, statusLabels } from "./ui";
 
@@ -23,7 +25,7 @@ function CentralAgentCard({ agent }: { readonly agent: Agent }) {
     >
       <div className="central-kicker">
         <span><StatusMark status={agent.status} />{statusLabels[agent.status]}</span>
-        <span>{agent.elapsed}</span>
+        {agent.elapsed ? <span>{agent.elapsed}</span> : null}
       </div>
       <h1>{agent.name}</h1>
       <p>{agent.task}</p>
@@ -155,7 +157,7 @@ function FocusRow({ agent, tag, onSelect }: { readonly agent: Agent; readonly ta
         <small>{agent.role}</small>
       </span>
       {agent.attention ? <span className="orbit-attention">!</span> : null}
-      <span className="focus-row-tag">{tag ?? agent.elapsed}</span>
+      {tag ?? agent.elapsed ? <span className="focus-row-tag">{tag ?? agent.elapsed}</span> : null}
     </button>
   );
 }
@@ -166,7 +168,7 @@ function FocusListHead({ agent }: { readonly agent: Agent }) {
       <div className="focus-list-head-row">
         <StatusMark status={agent.status} />
         <h1>{agent.name}</h1>
-        <span className="focus-list-head-when">{statusLabels[agent.status]} · {agent.elapsed}</span>
+        <span className="focus-list-head-when">{[statusLabels[agent.status], agent.elapsed].filter(Boolean).join(" · ")}</span>
       </div>
       <p className="focus-list-head-task">{agent.task}</p>
     </header>
@@ -178,29 +180,30 @@ export function FocusList({
   parent,
   children,
   onSelect,
+  onReplied,
 }: {
   readonly selected: Agent;
   readonly parent?: Agent;
   readonly children: readonly Agent[];
   readonly onSelect: (id: string) => void;
+  readonly onReplied?: (id: string) => void;
 }) {
   return (
     <section className="focus-list" aria-label="Focused agent relationships">
       <FocusListHead agent={selected} />
       <div className="focus-list-rows">
         {selected.runtime ? (
-          <div className="runtime-location">
-            <span>{selected.runtime.sourceLabel} location</span>
-            <dl>
+          <>
+            <dl className="runtime-location">
               {selected.workspace || selected.runtime.location?.workspaceId ? (
                 <div><dt>Workspace</dt><dd>{selected.workspace ?? selected.runtime.location?.workspaceId}</dd></div>
               ) : null}
-              {selected.runtime.location?.tabId ? <div><dt>Tab</dt><dd>{selected.runtime.location.tabId}</dd></div> : null}
               {selected.runtime.location?.paneId ? <div><dt>Pane</dt><dd>{selected.runtime.location.paneId}</dd></div> : null}
-              {selected.runtime.location?.cwd ? <div><dt>Directory</dt><dd>{selected.runtime.location.cwd}</dd></div> : null}
-              {!selected.runtime.location ? <div><dt>Location</dt><dd>Not exposed by this runtime</dd></div> : null}
+              {selected.runtime.location?.cwd ? <div><dt>Directory</dt><dd title={selected.runtime.location.cwd}>{displayPath(selected.runtime.location.cwd)}</dd></div> : null}
+              <div><dt>Runtime</dt><dd>{selected.runtime.sourceLabel} · {selected.role}</dd></div>
             </dl>
-          </div>
+            <AgentPreview agent={selected} identity={false} onReplied={onReplied ? () => onReplied(selected.id) : undefined} />
+          </>
         ) : (
           <>
             {parent ? <FocusRow agent={parent} tag="Parent" onSelect={() => onSelect(parent.id)} /> : null}

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { CommandPalette } from "./CommandPalette";
 import { ConversationPeek } from "./ConversationPeek";
 import { DiffDrawer } from "./DiffDrawer";
@@ -49,6 +49,9 @@ function drawerSize(drawer: Drawer | null) {
   return drawer === null ? null : { width: 1000, height: 760 };
 }
 
+const LIVE_REFRESH_MS = 2_000;
+const HIDDEN_REFRESH_MS = 10_000;
+
 const attentionPriority: Record<AgentStatus, number> = {
   "needs-you": 0,
   failed: 1,
@@ -58,8 +61,12 @@ const attentionPriority: Record<AgentStatus, number> = {
   unknown: 5,
 };
 
+/**
+ * Identifies one completed turn. Herdr's state sequence changes only with the
+ * lifecycle state, whereas `revision` also moves on unrelated title updates.
+ */
 function doneRevision(agent: Agent) {
-  return agent.runtime?.revision ?? 0;
+  return agent.runtime?.stateSequence ?? agent.runtime?.revision ?? 0;
 }
 
 function isDoneAcknowledged(agent: Agent, acknowledgedDone: Readonly<Record<string, number>>) {
@@ -159,12 +166,16 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
     [agents, selected],
   );
   const selectedChildren = useMemo(() => agents.filter((agent) => agent.parentId === selected.id), [agents, selected]);
+  const isAttention = useCallback(
+    (agent: Agent) => !isDoneAcknowledged(agent, acknowledgedDone) && needsAttention(agent),
+    [acknowledgedDone],
+  );
   const attentionAgents = useMemo(() => {
-    const attention = agents.filter((agent) => !isDoneAcknowledged(agent, acknowledgedDone) && needsAttention(agent));
+    const attention = agents.filter(isAttention);
     return demo
       ? attention.sort((a, b) => attentionPriority[a.status] - attentionPriority[b.status] || a.name.localeCompare(b.name))
       : attention;
-  }, [agents, acknowledgedDone, demo]);
+  }, [agents, isAttention, demo]);
   const workingPeekAgents = useMemo(
     () => agents.filter((agent) => agent.status === "working" && !needsAttention(agent)),
     [agents],
@@ -192,15 +203,23 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
     }
   }, [conversationPeekAgents, peekActiveId]);
 
+  // Poll briskly while summoned; when Heed is hidden, only keep the snapshot warm.
+  const panelHidden = useRef(false);
+  const refreshRuntimeNow = useRef<() => void>(() => undefined);
   useEffect(() => {
     if (demo) return;
     let active = true;
     let timer: number | undefined;
+    let inFlight = false;
     const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      if (timer !== undefined) window.clearTimeout(timer);
       try {
         const snapshot = await fetchRuntime();
         if (!active) return;
-        const next = snapshot.agents.map(runtimeAgent);
+        const now = Date.now();
+        const next = snapshot.agents.map((agent) => runtimeAgent(agent, now));
         setAgents((current) => next.map((agent) => {
           const existing = current.find((candidate) => candidate.id === agent.id);
           return existing?.changes.length ? { ...agent, workspace: existing.workspace, changes: existing.changes } : agent;
@@ -214,12 +233,15 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
       } catch {
         if (active) setConnection((current) => current === "live" || current === "stale" ? "stale" : "offline");
       } finally {
-        if (active) timer = window.setTimeout(refresh, 2_000);
+        inFlight = false;
+        if (active) timer = window.setTimeout(refresh, panelHidden.current ? HIDDEN_REFRESH_MS : LIVE_REFRESH_MS);
       }
     };
+    refreshRuntimeNow.current = () => void refresh();
     void refresh();
     return () => {
       active = false;
+      refreshRuntimeNow.current = () => undefined;
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [demo]);
@@ -274,10 +296,13 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
   }, [rendered.drawer, rendered.edge, rendered.mode]);
   useWindowEvent("heed:resized", () => setRendered({ ...geometryTargetRef.current }));
   useWindowEvent("heed:shown", () => {
+    panelHidden.current = false;
+    refreshRuntimeNow.current();
     setWindowFocused(true);
     returnToUpdateRail();
   });
   useWindowEvent("heed:hidden", () => {
+    panelHidden.current = true;
     cancelPendingChanges();
     setPaletteOpen(false);
     setReplyOpen(false);
@@ -353,7 +378,8 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
       setDrawer(null);
       return;
     }
-    setFleetFilter("attention");
+    // Summon lands on what needs you; with nothing waiting, show everything.
+    setFleetFilter(attentionAgents.length > 0 ? "attention" : "all");
     setDrawer("fleet");
     setAttentionFocusRequest((request) => request + 1);
   });
@@ -410,7 +436,7 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
     if (command && key === "k") {
       event.preventDefault();
       event.stopPropagation();
-      setPaletteOpen((open) => !open);
+      togglePalette();
       return;
     }
 
@@ -421,8 +447,9 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
       return;
     }
 
-    // Everything else belongs to xterm while the terminal has focus.
-    if (target?.closest?.(".terminal-frame")) return;
+    // Everything else belongs to xterm while the terminal has focus, and to
+    // the quick-reply field while the operator is typing a reply.
+    if (target?.closest?.(".terminal-frame, .quick-reply")) return;
     const editable = target?.closest?.("input, textarea, select, [contenteditable]");
     if (!command && !event.altKey && key === "?" && !editable) {
       event.preventDefault();
@@ -465,15 +492,42 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
     }
     if (command || event.altKey || editable) return;
 
-    if (key === "t" && drawer === "focus" && !replyOpen && (demo || selected.runtime?.capabilities.terminal)) {
+    if (key === "t" && drawer === "focus" && !replyOpen && selectedTarget && canOpenTerminal(selectedTarget)) {
       event.preventDefault();
-      setEvidence(null);
-      setReplyOpen(true);
+      openTerminal(selectedTarget.id);
     } else if (key === "d" && drawer === "focus" && !replyOpen) {
       event.preventDefault();
       void openChanges();
     }
   }, true);
+
+  /** A reply means the operator has seen the Agent's latest turn. */
+  function handleReplied(id: string) {
+    acknowledgeDone(id);
+    refreshRuntimeNow.current();
+  }
+
+  function togglePalette() {
+    if (paletteOpen) {
+      setPaletteOpen(false);
+      return;
+    }
+    // The collapsed rail window is too small for the palette; open the stage
+    // beneath it so the palette always has room.
+    if (drawer === null) {
+      setFleetFilter(attentionAgents.length > 0 ? "attention" : "all");
+      setDrawer("fleet");
+    }
+    setPaletteOpen(true);
+  }
+
+  function canOpenTerminal(agent: Agent) {
+    return demo || (agent.runtime?.capabilities.terminal === true && agent.runtime.sourceAvailable !== false);
+  }
+
+  function canOpenChanges(agent: Agent) {
+    return demo || (agent.runtime?.capabilities.workspaceChanges === true && agent.runtime.sourceAvailable !== false);
+  }
 
   function selectAgent(id: string) {
     cancelPendingChanges();
@@ -629,6 +683,7 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
         data-edge={rendered.edge}
         data-mode={rendered.mode}
         data-drawer={rendered.drawer ?? "rail"}
+        data-terminal={replyReady ? "open" : undefined}
         onMouseEnter={handleHudMouseEnter}
         onPointerEnter={handleHudMouseEnter}
         onPointerMove={handleHudMouseEnter}
@@ -674,7 +729,13 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
                   </div>
                 ) : (
                   <div className="focus-mode-layer">
-                    <FocusList selected={selected} parent={selectedParent} children={selectedChildren} onSelect={selectAgent} />
+                    <FocusList
+                      selected={selected}
+                      parent={selectedParent}
+                      children={selectedChildren}
+                      onSelect={selectAgent}
+                      onReplied={handleReplied}
+                    />
                   </div>
                 )}
               </div>
@@ -691,13 +752,13 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
                     Result{selected.result ? <em aria-label="has result">✓</em> : null}
                   </button>
                 ) : null}
-                {(demo || selected.runtime?.capabilities.workspaceChanges) ? (
+                {canOpenChanges(selected) ? (
                   <button className="chip" onClick={() => void openChanges()} type="button">
                     {!demo ? "Workspace changes" : "Changes"}{selected.changes.length > 0 ? <em>{selected.changes.length}</em> : null}
                   </button>
                 ) : null}
                 <span className="bar-spacer" />
-                {(demo || selected.runtime?.capabilities.terminal) ? <button className="chip chip-reply" onClick={() => { setEvidence(null); setReplyOpen(true); }} type="button">Terminal <kbd>T</kbd></button> : null}
+                {canOpenTerminal(selected) ? <button className="chip chip-reply" onClick={() => openTerminal(selected.id)} type="button">Terminal <kbd>T</kbd></button> : null}
                 {demo ? <button className="chip chip-spawn" onClick={spawnChild} type="button"><Glyph name="branch" /> Spawn child</button> : null}
               </div>
             </motion.section>
@@ -707,19 +768,25 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
               agents={agents}
               selectedId={selected.id}
               filter={fleetFilter}
+              isAttention={isAttention}
               onFilter={setFleetFilter}
-              onClose={() => { cancelPendingChanges(); setDrawer(null); }}
+              onClose={() => returnToUpdateRail(selected.id)}
               onTerminal={openTerminal}
               onChanges={(id) => void openChangesFor(id)}
+              onAcknowledge={acknowledgeDone}
+              onReplied={handleReplied}
+              canTerminal={canOpenTerminal}
+              canChanges={canOpenChanges}
               keyboardActive={!replyOpen && !paletteOpen}
               focusRequest={attentionFocusRequest}
+              connection={connection}
             />
           ) : null}
           {rendered.drawer === "diff" ? (
             <DiffDrawer
               agent={selected}
               onClose={() => setDrawer(returnDrawer)}
-              onTerminal={demo || selected.runtime?.capabilities.terminal ? () => openTerminal(selected.id) : undefined}
+              onTerminal={canOpenTerminal(selected) ? () => openTerminal(selected.id) : undefined}
             />
           ) : null}
         {rendered.drawer === "help" ? (
@@ -737,7 +804,7 @@ export function App({ demo = new URLSearchParams(window.location.search).has("de
           ) : null}
         </AnimatePresence>
         <AnimatePresence>
-          {paletteOpen ? (
+          {paletteOpen && rendered.drawer !== null ? (
             <CommandPalette
               agents={agents}
               onClose={() => { cancelPendingChanges(); setPaletteOpen(false); }}
