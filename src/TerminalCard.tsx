@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 import { TerminalOutput } from "./TerminalOutput";
 import type { Agent, ChatMessage } from "./types";
-import { EmptyState, enterTransition, Glyph, StatusMark } from "./ui";
+import { EmptyState, enterTransition, Glyph, StatusMark, statusLabels } from "./ui";
 
 export function TerminalCard({
   agent,
@@ -26,6 +26,9 @@ export function TerminalCard({
       <header className="reply-head">
         <StatusMark status={agent.status} />
         <strong>{agent.name}</strong>
+        <span className="reply-context">
+          {[agent.workspace, agent.attention ?? statusLabels[agent.status], agent.elapsed].filter(Boolean).join(" · ")}
+        </span>
         <span className="terminal-back-hint">Back to update rail <kbd>⌘W</kbd></span>
         <button className="icon-button" onClick={onClose} aria-label="Close terminal and return to update rail (Command-W)" type="button"><Glyph name="close" /></button>
       </header>

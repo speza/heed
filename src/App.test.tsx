@@ -227,12 +227,12 @@ describe("summoned hud", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "All agents" }));
     expect(screen.getByRole("heading", { name: "All agents" })).toBeInTheDocument();
-    const filter = screen.getByRole("button", { name: /All sessions/ });
+    const filter = screen.getByRole("button", { name: /^All \d+$/ });
     filter.focus();
     const filterEnter = createEvent.keyDown(filter, { key: "Enter" });
     fireEvent(filter, filterEnter);
     expect(filterEnter.defaultPrevented).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: /Needs you/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Needs you \d+$/ }));
     expect(screen.getByRole("heading", { name: "Needs you" })).toBeInTheDocument();
     expect(screen.queryByLabelText(/Terminal for/)).not.toBeInTheDocument();
 
@@ -286,7 +286,7 @@ describe("summoned hud", () => {
 
     fireEvent.keyDown(window, { key: "?", shiftKey: true });
     expect(screen.getByRole("heading", { name: "Keyboard shortcuts" })).toBeInTheDocument();
-    expect(screen.getByText("Focus update rail")).toBeInTheDocument();
+    expect(screen.getByText("Open what needs you")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "?", shiftKey: true });
     expect(screen.queryByRole("heading", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
@@ -346,5 +346,16 @@ describe("summoned hud", () => {
     fireEvent.click(screen.getByRole("button", { name: /Floating prototype/ }));
     fireEvent.keyDown(window, { key: "d" });
     expect(screen.getByRole("heading", { name: "Floating prototype" })).toBeInTheDocument();
+  });
+
+  test("opens the stage beneath the command palette when summoned from the rail", () => {
+    render(<App demo />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("complementary", { name: "Conversation updates" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    expect(screen.getByPlaceholderText("Find an Agent or run a command…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Needs you" })).toBeInTheDocument();
   });
 });

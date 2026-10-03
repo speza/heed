@@ -2,6 +2,9 @@ import { useEffect, useRef } from "react";
 import type { Agent } from "./types";
 import { needsAttention, StatusMark, statusLabels } from "./ui";
 
+/** How long a newly arrived attention item keeps its arrival pulse. */
+const FRESH_ATTENTION_MS = 12_000;
+
 export function ConversationPeek({
   agents,
   navigationAgents,
@@ -40,13 +43,16 @@ export function ConversationPeek({
   }, [focusRequest, expanded]);
 
   const agentButton = (agent: Agent) => {
-    const update = needsAttention(agent) ? agent.attention ?? statusLabels[agent.status] : statusLabels[agent.status];
+    const attention = needsAttention(agent);
+    const update = attention ? agent.attention ?? statusLabels[agent.status] : statusLabels[agent.status];
     const active = agent.id === activeId;
+    const since = agent.runtime?.statusSince;
+    const fresh = attention && since !== undefined && Date.now() - since < FRESH_ATTENTION_MS;
     return (
       <button
         key={agent.id}
         ref={active ? activeButton : undefined}
-        className={`conversation-peek-item status-surface-${agent.status} ${active ? "is-selected" : ""} ${agent.id === nativeHoverId ? "is-native-hover" : ""}`}
+        className={`conversation-peek-item status-surface-${agent.status} ${active ? "is-selected" : ""} ${agent.id === nativeHoverId ? "is-native-hover" : ""} ${fresh ? "is-fresh" : ""}`}
         data-agent-id={agent.id}
         type="button"
         aria-label={`${agent.name} · ${update}`}
@@ -57,7 +63,7 @@ export function ConversationPeek({
       >
         <span className="conversation-peek-copy">
           <strong>{agent.name}</strong>
-          <small>{update}</small>
+          <small>{update}{agent.elapsed ? <em> · {agent.elapsed}</em> : null}</small>
         </span>
         <span className="conversation-peek-arrow" aria-hidden="true">↗</span>
         <span className="conversation-peek-mark"><StatusMark status={agent.status} /></span>

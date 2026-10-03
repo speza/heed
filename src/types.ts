@@ -29,6 +29,8 @@ export interface RuntimeAgentMetadata {
   readonly sourceStale?: boolean;
   readonly location?: RuntimeLocation;
   readonly revision: number;
+  readonly stateSequence?: number;
+  readonly statusSince?: number;
   readonly interactiveReady?: boolean;
   readonly rawStatus: "working" | "idle" | "blocked" | "done" | "unknown";
 }
@@ -43,7 +45,8 @@ export interface Agent {
   readonly provider: string;
   readonly model: string;
   readonly workspace?: string;
-  readonly elapsed: string;
+  /** Time in the current state, when known. */
+  readonly elapsed?: string;
   readonly attention?: string;
   readonly messages: readonly ChatMessage[];
   readonly result?: string;

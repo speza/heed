@@ -69,6 +69,7 @@ POST   /api/runtime/agents/:id/terminal
 WS     /api/runtime/terminal/:session/socket
 DELETE /api/runtime/terminal/:session
 GET    /api/runtime/agents/:id/changes
+POST   /api/runtime/agents/:id/input
 ```
 
 ### `GET /api/runtime`
@@ -99,6 +100,7 @@ interface RuntimeCapabilities {
   readonly workspaceChanges: boolean;
   readonly spawn: boolean;
   readonly lineage: boolean;
+  readonly reply: boolean;
 }
 
 interface RuntimeLocation {
@@ -121,10 +123,16 @@ interface RuntimeAgent {
   readonly terminalTitle?: string;
   readonly focused: boolean;
   readonly revision: number;
+  readonly stateSequence?: number;
+  readonly statusSince?: number;
   readonly interactiveReady?: boolean;
   readonly capabilities: RuntimeCapabilities;
 }
 ```
+
+`stateSequence` is Herdr's `state_change_seq`. `statusSince` is the epoch time
+at which the adapter observed the current status begin; it is absent for a pane
+first seen mid-state because Herdr reports no timestamps.
 
 The gateway uses the namespaced Agent ID to route requests to the owning
 adapter. The Herdr adapter keeps its pane ID as an internal target and must not
@@ -150,7 +158,12 @@ selection uses the adapter's ordering.
 
 ### `GET .../output`
 
-The bounded output endpoint remains available for non-terminal evidence reads.
+The bounded output endpoint backs the read-only screen preview in the Agent
+list and live focus pane (`source=visible&format=ansi`). Heed renders SGR
+styling only and labels it as the terminal screen, never as a result. Read-only
+endpoints may validate the pane against a snapshot under 1.5 s old; terminal
+takeover always revalidates (ADR-0011).
+
 The terminal overlay uses Herdr's terminal controller:
 
 ```text
@@ -173,8 +186,10 @@ controller, allowing the existing Herdr client to reclaim presentation.
 
 xterm text, paste and ordinary terminal keys travel as ordered
 `terminal.input` records. Shift+Enter uses CSI-u byte input so supporting Agent
-applications can distinguish it from ordinary Enter. Heed does not maintain a
-second composer or synthetic chat history. Herdr retains the PTY, process, pane
+applications can distinguish it from ordinary Enter. Heed does not maintain
+synthetic chat history. A narrow quick reply (`POST .../input`: a prompt, a
+numbered dialog choice or Escape) is available without terminal takeover; see
+ADR-0012. Herdr retains the PTY, process, pane
 scrollback and durable terminal state.
 
 ## Workspace changes
@@ -223,8 +238,9 @@ highlighting with hunk line numbers.
   invoking surface when toggled again.
 - Spawn is hidden or disabled with an explanation.
 
-Unsupported fields such as model, elapsed time, structured result and task are
-omitted or shown as unavailable. They are not filled with fixture values.
+Unsupported fields such as model, structured result and task are omitted or
+shown as unavailable. They are not filled with fixture values. Elapsed time is
+shown only from an observed `statusSince`.
 
 ### Connection state
 

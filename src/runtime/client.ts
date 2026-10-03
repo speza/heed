@@ -1,4 +1,4 @@
-import type { RuntimeChanges, RuntimeOutput, RuntimeSnapshot, RuntimeTerminalMessage, RuntimeTerminalSession } from "./types";
+import type { RuntimeChanges, RuntimeInput, RuntimeOutput, RuntimeSnapshot, RuntimeTerminalMessage, RuntimeTerminalSession } from "./types";
 
 const JSON_HEADERS = { "content-type": "application/json" } as const;
 
@@ -12,7 +12,8 @@ export async function fetchRuntime(signal?: AbortSignal): Promise<RuntimeSnapsho
   return responseJson(await fetch("/api/runtime", { cache: "no-store", signal }));
 }
 
-export async function fetchAgentOutput(id: string, signal?: AbortSignal): Promise<RuntimeOutput> {
+/** Reads the Agent's visible terminal screen as ANSI text for a read-only preview. */
+export async function fetchAgentScreen(id: string, signal?: AbortSignal): Promise<RuntimeOutput> {
   return responseJson(
     await fetch(`/api/runtime/agents/${encodeURIComponent(id)}/output?source=visible&format=ansi&lines=200`, {
       cache: "no-store",
@@ -36,6 +37,17 @@ export async function openAgentTerminal(id: string, columns: number, rows: numbe
       method: "POST",
       headers: JSON_HEADERS,
       body: JSON.stringify({ columns, rows }),
+    }),
+  );
+}
+
+/** Sends a quick reply: a prompt, or an answer to the Agent's blocking dialog. */
+export async function sendAgentInput(id: string, input: RuntimeInput): Promise<void> {
+  await responseJson(
+    await fetch(`/api/runtime/agents/${encodeURIComponent(id)}/input`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(input),
     }),
   );
 }

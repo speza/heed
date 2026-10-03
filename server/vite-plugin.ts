@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import { createRuntimeGateway } from "./runtime-config.ts";
 import { handleRuntimeRequest, isTrustedLocalRequest } from "./runtime-gateway.ts";
 import { terminalGateway } from "./terminal.ts";
+import { bindTerminalSocket, terminalSocketTarget } from "./terminal-socket.ts";
 
 const runtimeGateway = createRuntimeGateway();
 const MAX_REQUEST_BODY_BYTES = 64 * 1024;
@@ -75,40 +76,21 @@ export function runtimeGatewayPlugin(): Plugin {
     name: "heed-runtime-gateway",
     configureServer(server) {
       const sockets = new WebSocketServer({ noServer: true });
-      const terminalSocketPath = /^\/api\/runtime\/terminal\/([0-9a-f-]{36})\/socket$/u;
       const onUpgrade = (request: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
         const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
-        const match = terminalSocketPath.exec(url.pathname);
-        if (!match?.[1]) return;
-        if (!isTrustedLocalRequest(url, request.headers.origin)) {
-          socket.destroy();
-          return;
-        }
-        const rawAfter = url.searchParams.get("after");
-        const afterDeliveryId = rawAfter === null ? undefined : Number(rawAfter);
-        if (afterDeliveryId !== undefined && (!Number.isSafeInteger(afterDeliveryId) || afterDeliveryId < 0)) {
+        const target = terminalSocketTarget(url);
+        if (!target) return;
+        if (target === "invalid" || !isTrustedLocalRequest(url, request.headers.origin)) {
           socket.destroy();
           return;
         }
         sockets.handleUpgrade(request, socket, head, (webSocket) => {
-          let connection: ReturnType<typeof terminalGateway.connect> | undefined;
-          try {
-            connection = terminalGateway.connect(match[1]!, (message) => {
-              webSocket.send(JSON.stringify(message));
-              if (message.kind === "closed") webSocket.close(1000, "Terminal closed");
-            }, afterDeliveryId);
-          } catch (error) {
-            webSocket.send(JSON.stringify({ kind: "closed", reason: error instanceof Error ? error.message : "Terminal unavailable." }));
-            webSocket.close(1008, "Terminal unavailable");
-            return;
-          }
-          webSocket.on("message", (message, binary) => {
-            if (!binary) {
-              const pending = connection?.receive(message.toString());
-              if (pending) void pending.catch(() => webSocket.close(1011, "Terminal input failed"));
-            } else webSocket.send(JSON.stringify({ kind: "error", message: "Terminal messages must be JSON text." }));
+          const binding = bindTerminalSocket(target, {
+            send: (text) => webSocket.send(text),
+            close: (code, reason) => webSocket.close(code, reason),
           });
-          webSocket.on("close", () => connection?.close());
+          webSocket.on("message", (message, binary) => binding.receive(binary ? new Uint8Array() : message.toString()));
+          webSocket.on("close", () => binding.close());
         });
       };
       server.httpServer?.on("upgrade", onUpgrade);

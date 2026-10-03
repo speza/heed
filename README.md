@@ -61,9 +61,20 @@ never resizes while summoned; panes compose inside the stage (see
   mark (runtime health as a signal colour), the `N need you` triage count, and
   pane controls. Green is live, amber is connecting/stale, red is offline and
   grey marks fixture mode.
-- In the attention list, `↑`/`↓` or `J`/`K` navigate, `Enter` or `T` opens the
-  selected Agent's terminal, `D` opens workspace changes, `/` focuses search,
-  and `A` toggles between attention and all Agents.
+- In the attention list, `↑`/`↓` or `J`/`K` navigate and preview the active
+  Agent's visible terminal screen beside the list (read-only; ADR-0011).
+  `Enter` or `T` opens the selected Agent's terminal, `D` opens workspace
+  changes, `/` focuses search (`Enter` there opens the top match), and `A`
+  toggles between attention and all Agents. With nothing waiting on you,
+  `Option+Space` opens the full list instead of an empty one.
+- Reply without opening the terminal (ADR-0012): `R` focuses a one-line
+  prompt for an idle or finished Agent (or queues one for a working Agent).
+  When an Agent is blocked at a dialog, its numbered options appear under the
+  preview and `1`–`9` answer it; Escape dismisses it. `E` marks a finished
+  turn as seen.
+- Rows, the rail and the focus pane show how long an Agent has been in its
+  current state once Heed has observed the transition; Herdr reports no
+  timestamps, so nothing is guessed.
 - In workspace changes, `↑`/`↓` or `J`/`K` navigate files, `Enter`/`Space`
   expands the active file, and `T` opens the terminal.
 - `⌘W` closes the terminal or changes surface and returns to the preserved

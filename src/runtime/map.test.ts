@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { runtimeAgent, runtimeStatus } from "./map";
+import { displayPath, formatDuration, runtimeAgent, runtimeStatus } from "./map";
 
 describe("runtime mapping", () => {
   test("maps blocked and idle states without inventing failure", () => {
@@ -26,6 +26,7 @@ describe("runtime mapping", () => {
         workspaceChanges: false,
         spawn: false,
         lineage: false,
+        reply: false,
       },
     });
 
@@ -64,6 +65,7 @@ describe("runtime mapping", () => {
         workspaceChanges: true,
         spawn: false,
         lineage: false,
+        reply: true,
       },
     });
 
@@ -76,6 +78,41 @@ describe("runtime mapping", () => {
       sourceLabel: "Herdr",
       location: { paneId: "w1:p2", cwd: "/repo/heed" },
       capabilities: { terminal: true, workspaceChanges: true },
+    });
+  });
+});
+
+describe("runtime display helpers", () => {
+  test("formats compact durations", () => {
+    expect(formatDuration(4_000)).toBe("now");
+    expect(formatDuration(42_000)).toBe("42s");
+    expect(formatDuration(7 * 60_000)).toBe("7m");
+    expect(formatDuration(3 * 3_600_000)).toBe("3h");
+    expect(formatDuration(72 * 3_600_000)).toBe("3d");
+  });
+
+  test("abbreviates home directories only at the path root", () => {
+    expect(displayPath("/Users/sam/Documents/heed")).toBe("~/Documents/heed");
+    expect(displayPath("/home/sam")).toBe("~");
+    expect(displayPath("/srv/Users/sam")).toBe("/srv/Users/sam");
+  });
+
+  test("shows time in state only when the gateway observed it", () => {
+    const base = {
+      id: "herdr-local:p1",
+      source: { id: "herdr-local", kind: "herdr", label: "Herdr" },
+      name: "Agent",
+      kind: "claude",
+      status: "blocked",
+      focused: false,
+      revision: 1,
+      capabilities: { terminal: true, output: true, conversation: false, workspaceChanges: true, spawn: false, lineage: false, reply: true },
+    } as const;
+
+    expect(runtimeAgent(base).elapsed).toBeUndefined();
+    expect(runtimeAgent({ ...base, statusSince: 1_000, stateSequence: 5 }, 181_000)).toMatchObject({
+      elapsed: "3m",
+      runtime: { stateSequence: 5, statusSince: 1_000 },
     });
   });
 });

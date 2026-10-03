@@ -39,7 +39,7 @@ export function CommandPalette({
   const normalized = query.trim().toLowerCase();
   const matchedCommands = commands.filter((command) => command.label.toLowerCase().includes(normalized));
   const matchedAgents = agents
-    .filter((agent) => `${agent.name} ${agent.task}`.toLowerCase().includes(normalized))
+    .filter((agent) => `${agent.name} ${agent.task} ${agent.workspace ?? ""}`.toLowerCase().includes(normalized))
     .slice(0, 6);
   const total = matchedCommands.length + matchedAgents.length;
 
@@ -86,7 +86,7 @@ export function CommandPalette({
             return (
               <button key={agent.id} type="button" className={index_ === active ? "is-active" : ""} onMouseEnter={() => setActive(index_)} onClick={() => run(index_)}>
                 <StatusMark status={agent.status} />
-                <span><strong>{agent.name}</strong><small>{agent.task}</small></span>
+                <span><strong>{agent.name}</strong><small>{[agent.workspace, agent.task !== agent.workspace ? agent.task : undefined].filter(Boolean).join(" · ")}</small></span>
                 <kbd>↵</kbd>
               </button>
             );

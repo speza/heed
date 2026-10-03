@@ -1,6 +1,7 @@
 import type {
   RuntimeCapabilities,
   RuntimeChanges,
+  RuntimeInput,
   RuntimeOutput,
   RuntimeSnapshot,
   RuntimeSource,
@@ -28,6 +29,7 @@ export interface RuntimeAdapter {
   readChanges?(id: string): Promise<RuntimeChanges>;
   openTerminal?(id: string, dimensions: RuntimeTerminalDimensions): Promise<RuntimeTerminalSession>;
   releaseTerminal?(sessionId: string): Promise<void>;
+  sendInput?(id: string, input: RuntimeInput): Promise<void>;
 }
 
 export class RuntimeAdapterError extends Error {
@@ -48,8 +50,32 @@ const UNAVAILABLE_CAPABILITIES: RuntimeCapabilities = {
   workspaceChanges: false,
   spawn: false,
   lineage: false,
+  reply: false,
 };
 const MAX_RUNTIME_REQUEST_BYTES = 64 * 1024;
+const MAX_PROMPT_CHARACTERS = 8_000;
+
+/** Validates a quick-reply body; anything outside the narrow contract is rejected. */
+export function parseRuntimeInput(value: unknown): RuntimeInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new RuntimeAdapterError(400, "Reply must be a JSON object.");
+  const record = value as Record<string, unknown>;
+  if (record.kind === "prompt") {
+    const text = typeof record.text === "string" ? record.text.trim() : "";
+    if (!text) throw new RuntimeAdapterError(400, "Reply text is empty.");
+    if (text.length > MAX_PROMPT_CHARACTERS) throw new RuntimeAdapterError(413, "Reply text is too long.");
+    if (/[\u0000-\u0008\u000b-\u001f\u007f]/u.test(text)) throw new RuntimeAdapterError(400, "Reply text contains control characters.");
+    return { kind: "prompt", text };
+  }
+  if (record.kind === "choice") {
+    if (typeof record.value !== "string" || !/^[1-9]$/u.test(record.value)) throw new RuntimeAdapterError(400, "Choice must be a single digit from 1 to 9.");
+    return { kind: "choice", value: record.value };
+  }
+  if (record.kind === "key") {
+    if (record.key !== "esc") throw new RuntimeAdapterError(400, "Only Escape can be sent as a key.");
+    return { kind: "key", key: "esc" };
+  }
+  throw new RuntimeAdapterError(400, "Unknown reply kind.");
+}
 
 export class RuntimeGateway {
   private readonly adapters: readonly RuntimeAdapter[];
@@ -130,6 +156,12 @@ export class RuntimeGateway {
     const adapter = await this.resolve(id);
     if (!adapter.openTerminal) throw new RuntimeAdapterError(409, `${adapter.source.label} does not expose an interactive terminal.`);
     return adapter.openTerminal(id, dimensions);
+  }
+
+  async sendInput(id: string, input: RuntimeInput): Promise<void> {
+    const adapter = await this.resolve(id);
+    if (!adapter.sendInput) throw new RuntimeAdapterError(409, `${adapter.source.label} does not accept quick replies.`);
+    await adapter.sendInput(id, input);
   }
 
   async releaseTerminal(sessionId: string): Promise<void> {
@@ -226,6 +258,13 @@ export async function handleRuntimeRequest(request: Request, gateway: RuntimeGat
         if (error instanceof RuntimeAdapterError) throw error;
         throw new RuntimeAdapterError(409, error instanceof Error ? error.message : "Terminal session could not be opened.");
       }
+    }
+
+    const reply = /^\/api\/runtime\/agents\/([^/]+)\/input$/u.exec(url.pathname);
+    if (reply?.[1]) {
+      if (request.method !== "POST") throw new RuntimeAdapterError(405, "Method not allowed.");
+      await gateway.sendInput(agentId(reply[1]), parseRuntimeInput(await boundedJson(request)));
+      return json({ ok: true });
     }
 
     const match = /^\/api\/runtime\/agents\/([^/]+)\/(output|changes)$/u.exec(url.pathname);

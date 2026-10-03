@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { RuntimeAgent, RuntimeCapabilities, RuntimeSource } from "../src/runtime/types";
 import { MockApiRuntimeAdapter } from "./mock-runtime";
-import { handleRuntimeRequest, RuntimeGateway, type RuntimeAdapter } from "./runtime-gateway";
+import { handleRuntimeRequest, parseRuntimeInput, RuntimeGateway, type RuntimeAdapter } from "./runtime-gateway";
 
 const capabilities: RuntimeCapabilities = {
   terminal: false,
@@ -10,6 +10,7 @@ const capabilities: RuntimeCapabilities = {
   workspaceChanges: false,
   spawn: false,
   lineage: false,
+  reply: false,
 };
 
 function agent(source: RuntimeSource, id: string): RuntimeAgent {
@@ -89,6 +90,7 @@ describe("runtime gateway", () => {
       workspaceChanges: false,
       spawn: false,
       lineage: false,
+      reply: false,
     });
     expect(stale.sourceHealth[0]).toMatchObject({ available: false, stale: true, error: "Herdr stopped" });
   });
@@ -171,5 +173,52 @@ describe("runtime gateway", () => {
     const gateway = new RuntimeGateway([]);
     const response = await handleRuntimeRequest(new Request("http://127.0.0.1:4311/api/runtime/agents/%E0%A4%A/changes"), gateway);
     expect(response?.status).toBe(400);
+  });
+
+  test("routes a validated quick reply to the owning adapter", async () => {
+    const source: RuntimeSource = { id: "herdr-local", kind: "herdr", label: "Herdr" };
+    const received: unknown[] = [];
+    const gateway = new RuntimeGateway([{
+      source,
+      snapshot: async () => ({ available: true, agents: [], fetchedAt: Date.now() }),
+      sendInput: async (id, input) => { received.push({ id, input }); },
+    }]);
+
+    const response = await handleRuntimeRequest(
+      new Request("http://127.0.0.1/api/runtime/agents/herdr-local%3Aw1%3Ap1/input", {
+        method: "POST",
+        body: JSON.stringify({ kind: "prompt", text: "  run the tests again  " }),
+      }),
+      gateway,
+    );
+
+    expect(response?.status).toBe(200);
+    expect(received).toEqual([{ id: "herdr-local:w1:p1", input: { kind: "prompt", text: "run the tests again" } }]);
+  });
+
+  test("refuses quick replies to a source without the capability", async () => {
+    const response = await handleRuntimeRequest(
+      new Request("http://127.0.0.1/api/runtime/agents/mock-api%3Aresearch/input", { method: "POST", body: '{"kind":"key","key":"esc"}' }),
+      new RuntimeGateway([new MockApiRuntimeAdapter()]),
+    );
+
+    expect(response?.status).toBe(409);
+  });
+
+  test("accepts only the narrow quick-reply contract", () => {
+    expect(parseRuntimeInput({ kind: "choice", value: "2" })).toEqual({ kind: "choice", value: "2" });
+    expect(parseRuntimeInput({ kind: "key", key: "esc" })).toEqual({ kind: "key", key: "esc" });
+    for (const invalid of [
+      null,
+      { kind: "prompt", text: "   " },
+      { kind: "prompt", text: "rm -rf /\u0003" },
+      { kind: "prompt", text: "x".repeat(8_001) },
+      { kind: "choice", value: "12" },
+      { kind: "choice", value: "0" },
+      { kind: "key", key: "ctrl+c" },
+      { kind: "bytes", bytes: [3] },
+    ]) {
+      expect(() => parseRuntimeInput(invalid)).toThrow();
+    }
   });
 });

@@ -3,12 +3,12 @@
 import { extname, join, normalize, resolve } from "node:path";
 import { handleRuntimeRequest, isTrustedLocalRequest } from "./runtime-gateway.ts";
 import { createRuntimeGateway } from "./runtime-config.ts";
-import { terminalGateway, type TerminalServerMessage } from "./terminal.ts";
+import { terminalGateway } from "./terminal.ts";
+import { bindTerminalSocket, type TerminalSocketBinding, type TerminalSocketTarget, terminalSocketTarget } from "./terminal-socket.ts";
 
 interface TerminalSocketData {
-  readonly sessionId: string;
-  readonly afterDeliveryId?: number;
-  connection?: ReturnType<typeof terminalGateway.connect>;
+  readonly target: TerminalSocketTarget;
+  binding?: TerminalSocketBinding;
 }
 
 const port = Number(process.env.HEED_PORT ?? "4311");
@@ -36,8 +36,6 @@ async function staticResponse(url: URL): Promise<Response> {
   });
 }
 
-const terminalSocketPath = /^\/api\/runtime\/terminal\/([0-9a-f-]{36})\/socket$/u;
-
 const server = Bun.serve<TerminalSocketData>({
   hostname: "127.0.0.1",
   port,
@@ -47,13 +45,10 @@ const server = Bun.serve<TerminalSocketData>({
     if (request.method === "GET" && url.pathname === "/api/health") {
       return Response.json({ service: "heed", status: "ok" }, { headers: { "cache-control": "no-store" } });
     }
-    const terminalSocket = terminalSocketPath.exec(url.pathname);
-    if (terminalSocket?.[1]) {
-      const rawAfter = url.searchParams.get("after");
-      const afterDeliveryId = rawAfter === null ? undefined : Number(rawAfter);
-      if (afterDeliveryId !== undefined && (!Number.isSafeInteger(afterDeliveryId) || afterDeliveryId < 0))
-        return new Response("Invalid terminal replay cursor.", { status: 400 });
-      if (!runningServer.upgrade(request, { data: { sessionId: terminalSocket[1], afterDeliveryId } }))
+    const target = terminalSocketTarget(url);
+    if (target === "invalid") return new Response("Invalid terminal replay cursor.", { status: 400 });
+    if (target) {
+      if (!runningServer.upgrade(request, { data: { target } }))
         return new Response("Terminal WebSocket upgrade failed.", { status: 400 });
       return;
     }
@@ -62,25 +57,16 @@ const server = Bun.serve<TerminalSocketData>({
   },
   websocket: {
     open(socket) {
-      try {
-        socket.data.connection = terminalGateway.connect(socket.data.sessionId, (message: TerminalServerMessage) => {
-          socket.send(JSON.stringify(message));
-          if (message.kind === "closed") socket.close(1000, "Terminal closed");
-        }, socket.data.afterDeliveryId);
-      } catch (error) {
-        socket.send(JSON.stringify({ kind: "closed", reason: error instanceof Error ? error.message : "Terminal unavailable." }));
-        socket.close(1008, "Terminal unavailable");
-      }
+      socket.data.binding = bindTerminalSocket(socket.data.target, {
+        send: (text) => socket.send(text),
+        close: (code, reason) => socket.close(code, reason),
+      });
     },
     message(socket, message) {
-      if (typeof message === "string") {
-        const pending = socket.data.connection?.receive(message);
-        if (pending) void pending.catch(() => socket.close(1011, "Terminal input failed"));
-      }
-      else socket.send(JSON.stringify({ kind: "error", message: "Terminal messages must be JSON text." }));
+      socket.data.binding?.receive(message);
     },
     close(socket) {
-      socket.data.connection?.close();
+      socket.data.binding?.close();
     },
   },
 });
